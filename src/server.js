@@ -34,9 +34,9 @@ function needConfirm(what) {
   return asText(`Not done: ${what}\nThis changes the account. Describe the change to the user, get an explicit yes, then call the tool again with confirm=true.`);
 }
 
-export function createGyroServer({ token, apiUrl, docsUrl, fetchImpl } = {}) {
+export function createGyroServer({ token, apiUrl, docsUrl, docs: sharedDocs, fetchImpl } = {}) {
   const api = new GyroApi({ token, baseUrl: apiUrl, fetchImpl });
-  const docs = new Docs({ baseUrl: docsUrl, fetchImpl });
+  const docs = sharedDocs || new Docs({ baseUrl: docsUrl, fetchImpl });
   const s = new McpServer({ name: 'gyro', title: 'Gyro Hosting', version: VERSION }, {
     instructions: 'Gyro Hosting MCP server. Docs tools (search_docs, get_endpoint, get_doc, list_products, get_limits_info) work without a key. ' +
       'Account tools act with the user\'s own Gyro API key and only see that account. Tools that change something need confirm=true after the user agreed; ' +

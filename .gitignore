@@ -2,3 +2,4 @@ node_modules/
 .gizli/
 test/sonuc-*.json
 araclar/
+*.bak-r2-*

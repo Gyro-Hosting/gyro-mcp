@@ -1,0 +1,8 @@
+node_modules
+.git
+.gizli
+araclar
+test
+deploy
+*.bak-r2-*
+.github

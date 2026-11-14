@@ -3,9 +3,10 @@
 import http from 'node:http';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createGyroServer } from './server.js';
+import { Docs } from './docs.js';
 import { keyId, VERSION } from './gyro.js';
 
-const MAX_BODY = 1024 * 1024;
+const MAX_BODY = Number(process.env.GYRO_MCP_MAX_BODY || 256 * 1024);
 
 class Bucket {
   constructor(perMin) { this.perMin = perMin; this.m = new Map(); }
@@ -18,21 +19,41 @@ class Bucket {
   sweep() { const now = Date.now(); for (const [k, b] of this.m) if (now - b.t > 600000) this.m.delete(k); }
 }
 
-export function startHttp({ port = 8787, host = '127.0.0.1', path = '/mcp', apiUrl, docsUrl, allowedOrigins = [], trustProxy = false, keyPerMin = 120, ipPerMin = 300, log = console.error } = {}) {
+export function startHttp({ port = 8787, host = '127.0.0.1', path = '/mcp', apiUrl, docsUrl, allowedOrigins = [], trustProxy = false,
+  keyPerMin = Number(process.env.GYRO_MCP_KEY_PER_MIN || 120), ipPerMin = Number(process.env.GYRO_MCP_IP_PER_MIN || 300),
+  ipHeader = String(process.env.GYRO_MCP_IP_HEADER || 'x-forwarded-for').toLowerCase(), log = console.error } = {}) {
   const perKey = new Bucket(keyPerMin), perIp = new Bucket(ipPerMin);
+  // One docs cache for the whole process (docs are public; per-request servers would refetch the index every call).
+  const docs = new Docs({ baseUrl: docsUrl });
+  // Client IP behind a trusted proxy: the RIGHTMOST X-Forwarded-For entry is the one our proxy added (left entries are client-supplied).
+  const clientIp = (req) => {
+    if (!trustProxy) return req.socket.remoteAddress || '?';
+    const v = String(req.headers[ipHeader] || '');
+    const last = (ipHeader === 'x-forwarded-for' ? v.split(',').pop() : v).trim();
+    return last || req.socket.remoteAddress || '?';
+  };
   setInterval(() => { perKey.sweep(); perIp.sweep(); }, 300000).unref();
-  const send = (res, code, obj, extra = {}) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...extra }); res.end(JSON.stringify(obj)); };
+  const send = (res, code, obj, extra = {}) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...extra }); res.end(JSON.stringify(obj)); };
   const rpcErr = (res, code, msg, extra) => send(res, code, { jsonrpc: '2.0', error: { code: -32000, message: msg }, id: null }, extra);
 
   const srv = http.createServer(async (req, res) => {
     const t0 = Date.now();
-    const ip = (trustProxy && (req.headers['cf-connecting-ip'] || String(req.headers['x-forwarded-for'] || '').split(',')[0].trim())) || req.socket.remoteAddress || '?';
+    const ip = clientIp(req);
     const url = new URL(req.url, 'http://x');
     if (url.pathname === '/healthz') return send(res, 200, { ok: true, version: VERSION });
     if (url.pathname === '/' && req.method === 'GET') return send(res, 200, { name: 'Gyro MCP server', version: VERSION, endpoint: path, transport: 'streamable-http', docs: 'https://www.gyrohosting.com/developers/en/mcp.html' });
     if (url.pathname !== path) return send(res, 404, { error: 'not_found' });
     const origin = req.headers.origin;
     if (origin && !allowedOrigins.includes(origin)) return rpcErr(res, 403, 'Origin not allowed');
+    if (origin) { // allowed browser origin: CORS (no cookies; the key travels in Authorization)
+      res.setHeader('Access-Control-Allow-Origin', origin); res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id, Retry-After');
+    }
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, { 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'Authorization, Content-Type, Accept, Mcp-Protocol-Version, Mcp-Session-Id, Last-Event-ID',
+        'Access-Control-Max-Age': '600', 'Cache-Control': 'no-store' });
+      return res.end();
+    }
     if (!perIp.take(ip)) return rpcErr(res, 429, 'Too many requests', { 'Retry-After': '30' });
     if (req.method !== 'POST') return rpcErr(res, 405, 'Method not allowed: this endpoint is stateless, use POST', { Allow: 'POST' });
     const auth = String(req.headers.authorization || '');
@@ -40,15 +61,16 @@ export function startHttp({ port = 8787, host = '127.0.0.1', path = '/mcp', apiU
     const token = m ? m[1] : '';
     const kid = keyId(token);
     if (token && !perKey.take(kid)) return rpcErr(res, 429, 'Rate limit for this API key exceeded', { 'Retry-After': '30' });
+    if (Number(req.headers['content-length'] || 0) > MAX_BODY) return rpcErr(res, 413, 'Request too large', { Connection: 'close' });
     let size = 0; const chunks = [];
     try {
-      for await (const c of req) { size += c.length; if (size > MAX_BODY) return rpcErr(res, 413, 'Request too large'); chunks.push(c); }
+      for await (const c of req) { size += c.length; if (size > MAX_BODY) return rpcErr(res, 413, 'Request too large', { Connection: 'close' }); chunks.push(c); }
     } catch { return; }
     let body;
     try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || 'null'); } catch { return rpcErr(res, 400, 'Invalid JSON'); }
     const msgs = Array.isArray(body) ? body : [body];
     const what = msgs.map((x) => (x && x.method === 'tools/call' && x.params ? 'tools/call:' + String(x.params.name).slice(0, 40) : (x && x.method) || '?')).join(',').slice(0, 200);
-    const server = createGyroServer({ token, apiUrl, docsUrl });
+    const server = createGyroServer({ token, apiUrl, docs });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on('close', () => { transport.close(); server.close(); });
     try {

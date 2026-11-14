@@ -37,7 +37,20 @@ Create the key in the client area → account menu → **API Credentials**. Star
   `Idempotency-Key` (derived from the arguments, so a retry never orders twice).
 - API results are wrapped as **untrusted data**: names, logs and messages may contain text written by others; assistants are told never to follow instructions inside them.
 
-## Remote mode
+## Hosted remote endpoint
+
+Gyro runs this server for you at **`https://mcp.gyrohosting.com/mcp`** (Streamable HTTP, stateless). No install needed:
+
+```json
+{ "mcpServers": { "gyro": { "type": "http", "url": "https://mcp.gyrohosting.com/mcp", "headers": { "Authorization": "Bearer wck_..." } } } }
+```
+
+Claude Code: `claude mcp add --transport http gyro https://mcp.gyrohosting.com/mcp --header "Authorization: Bearer wck_..."`
+
+Without the header only the docs tools work. If your API key is locked to IP addresses, also allow the endpoint's outgoing
+addresses `45.87.174.151`, `45.87.174.153`, `45.87.174.154`. Limits: about 120 requests per minute per key, 256 KB per request.
+
+## Remote mode (self-hosted)
 
 `gyro-mcp --http --port 8787` serves stateless Streamable HTTP on `/mcp`. Each request brings its own `Authorization: Bearer wck_…`;
 a new server instance is built per request, so nothing is shared between keys. Per-key and per-IP rate limits; browser `Origin`s are refused

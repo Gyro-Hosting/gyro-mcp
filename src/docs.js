@@ -17,6 +17,7 @@ export class Docs {
     const r = await this.fetch(url, { headers: { 'User-Agent': 'gyro-mcp' }, redirect: 'error' });
     if (!r.ok) { const e = new Error(`docs: ${r.status} for ${url}`); e.status = r.status; throw e; }
     const v = kind === 'json' ? await r.json() : await r.text();
+    if (this.cache.size >= 500) this.cache.delete(this.cache.keys().next().value);
     this.cache.set(url, { t: Date.now(), v });
     return v;
   }

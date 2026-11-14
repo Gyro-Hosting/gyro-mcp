@@ -1,0 +1,122 @@
+# Gyro MCP uzak uç — https://mcp.gyrohosting.com/mcp  (ECS k3s, ns gyro-mcp). Uygula: kubectl apply -f gyro-mcp.yaml
+# Geri alma: kubectl delete ns gyro-mcp  (+ Cloudflare'de mcp A kaydını sil)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gyro-mcp
+  labels: {app.kubernetes.io/part-of: gyro-mcp, pod-security.kubernetes.io/enforce: restricted}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: gyro-mcp, namespace: gyro-mcp}
+data:
+  GYRO_API_URL: https://www.gyrohosting.com/api/v1/client
+  GYRO_DOCS_URL: https://www.gyrohosting.com/developers
+  # 2 kopya, sayaçlar kopya başına bellekte: kopya başı 60 → anahtar başına toplam ~120/dk (istekler kopyalara dağılır)
+  GYRO_MCP_KEY_PER_MIN: "60"
+  GYRO_MCP_IP_PER_MIN: "150"
+  GYRO_MCP_MAX_BODY: "262144"
+  GYRO_MCP_IP_HEADER: x-forwarded-for
+  # Tarayıcı Origin'i: yalnız Claude web/masaüstü bağlayıcıları (Origin göndermeyen istemciler etkilenmez)
+  GYRO_MCP_ORIGINS: https://claude.ai,https://www.gyrohosting.com
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: gyro-mcp, namespace: gyro-mcp, labels: {app: gyro-mcp}}
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  selector: {matchLabels: {app: gyro-mcp}}
+  strategy: {type: RollingUpdate, rollingUpdate: {maxSurge: 1, maxUnavailable: 0}}
+  template:
+    metadata: {labels: {app: gyro-mcp}}
+    spec:
+      automountServiceAccountToken: false
+      # Çıkış IP'si = düğüm IP'si (NAT): API anahtarı IP kilidi için sabit küme → yalnız kontrol düzlemi (45.87.174.151/.153/.154)
+      nodeSelector: {gyro.role: control-plane}
+      enableServiceLinks: false
+      securityContext: {runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, seccompProfile: {type: RuntimeDefault}}
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector: {matchLabels: {app: gyro-mcp}}
+            topologyKey: kubernetes.io/hostname
+      terminationGracePeriodSeconds: 70
+      containers:
+      - name: mcp
+        image: registry.ist.gyrohosting.com/gyro/mcp:0.1.1-2
+        imagePullPolicy: IfNotPresent
+        envFrom: [{configMapRef: {name: gyro-mcp}}]
+        ports: [{name: http, containerPort: 8080}]
+        readinessProbe: {httpGet: {path: /healthz, port: 8080}, periodSeconds: 5, timeoutSeconds: 2}
+        livenessProbe: {httpGet: {path: /healthz, port: 8080}, periodSeconds: 20, timeoutSeconds: 2, failureThreshold: 3}
+        lifecycle: {preStop: {sleep: {seconds: 8}}}
+        resources:
+          requests: {cpu: 25m, memory: 48Mi}
+          limits: {cpu: 500m, memory: 192Mi}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities: {drop: [ALL]}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: gyro-mcp, namespace: gyro-mcp}
+spec:
+  minAvailable: 1
+  selector: {matchLabels: {app: gyro-mcp}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: gyro-mcp, namespace: gyro-mcp}
+spec:
+  selector: {app: gyro-mcp}
+  ports: [{name: http, port: 80, targetPort: 8080}]
+---
+# Giriş yalnız ingress denetleyicisinden; çıkış yalnız kube-dns + Cloudflare (www.gyrohosting.com) 443.
+# Altyapı/özel ağlar (EGRESS_EXCEPT) zaten listede değil → kapalı. Cloudflare aralıkları: https://www.cloudflare.com/ips-v4
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: gyro-mcp, namespace: gyro-mcp}
+spec:
+  podSelector: {matchLabels: {app: gyro-mcp}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+  - from: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: gyro-ingress}}}]
+    ports: [{port: 8080, protocol: TCP}]
+  egress:
+  - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}, podSelector: {matchLabels: {k8s-app: kube-dns}}}]
+    ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]
+  - ports: [{port: 443, protocol: TCP}]
+    to:
+        - ipBlock: {cidr: 173.245.48.0/20}
+        - ipBlock: {cidr: 103.21.244.0/22}
+        - ipBlock: {cidr: 103.22.200.0/22}
+        - ipBlock: {cidr: 103.31.4.0/22}
+        - ipBlock: {cidr: 141.101.64.0/18}
+        - ipBlock: {cidr: 108.162.192.0/18}
+        - ipBlock: {cidr: 190.93.240.0/20}
+        - ipBlock: {cidr: 188.114.96.0/20}
+        - ipBlock: {cidr: 197.234.240.0/22}
+        - ipBlock: {cidr: 198.41.128.0/17}
+        - ipBlock: {cidr: 162.158.0.0/15}
+        - ipBlock: {cidr: 104.16.0.0/13}
+        - ipBlock: {cidr: 104.24.0.0/14}
+        - ipBlock: {cidr: 172.64.0.0/13}
+        - ipBlock: {cidr: 131.0.72.0/22}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gyro-mcp
+  namespace: gyro-mcp
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: gyro
+  tls: [{hosts: [mcp.gyrohosting.com], secretName: gyro-mcp-tls}]
+  rules:
+  - host: mcp.gyrohosting.com
+    http:
+      paths:
+      - {path: /, pathType: Prefix, backend: {service: {name: gyro-mcp, port: {number: 80}}}}
