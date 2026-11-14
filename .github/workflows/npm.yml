@@ -1,0 +1,29 @@
+# Publishes @gyro-hosting/mcp to npm with provenance when a v* tag is pushed (or by hand).
+# Auth: NPM_TOKEN repository secret (granular, @gyro-hosting scope) until npm trusted publishing is configured for this workflow.
+name: npm
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', registry-url: 'https://registry.npmjs.org' }
+      - run: npm install -g npm@11.6.2
+      - run: npm ci
+      - run: npm test
+      - name: Version must match the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: test "v$(node -p "require('./package.json').version")" = "${GITHUB_REF_NAME}"
+      - name: Publish (skip if this version exists)
+        env: { NODE_AUTH_TOKEN: '${{ secrets.NPM_TOKEN }}' }
+        run: |
+          v=$(node -p "require('./package.json').version")
+          if npm view "@gyro-hosting/mcp@$v" version >/dev/null 2>&1; then echo "already published"; exit 0; fi
+          npm publish --provenance --access public

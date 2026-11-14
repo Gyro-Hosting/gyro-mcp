@@ -1,0 +1,20 @@
+{
+  "name": "@gyro-hosting/mcp",
+  "version": "0.1.0",
+  "description": "Gyro Hosting MCP server: search the Gyro developer docs and manage your Gyro cloud (servers, containers, S3, DNS, billing) from AI assistants with your own API key.",
+  "type": "module",
+  "bin": { "gyro-mcp": "bin/gyro-mcp.js" },
+  "main": "src/server.js",
+  "files": ["bin", "src", "README.md", "LICENSE"],
+  "engines": { "node": ">=18.17" },
+  "keywords": ["mcp", "model-context-protocol", "gyro", "gyro-hosting", "cloud", "api", "ai"],
+  "homepage": "https://www.gyrohosting.com/developers/en/mcp.html",
+  "repository": { "type": "git", "url": "git+https://github.com/Gyro-Hosting/gyro-mcp.git" },
+  "license": "MPL-2.0",
+  "author": "Gyro Hosting",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "zod": "3.25.76"
+  },
+  "scripts": { "test": "node --test test/unit.test.mjs" }
+}
