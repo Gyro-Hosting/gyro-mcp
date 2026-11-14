@@ -25,10 +25,10 @@ Create the key in the client area → account menu → **API Credentials**. Star
 | Group | Tools |
 |---|---|
 | Docs (no key) | `search_docs`, `get_endpoint`, `get_doc`, `list_products`, `get_limits_info` |
-| Read | `whoami`, `list_services`, `get_service`, `list_servers`, `get_server`, `get_catalog`, `get_balance`, `get_container_environment`, `list_container_services`, `get_container_logs`, `list_buckets`, `list_objects`, `list_dns_zones`, `list_dns_records`, `api_get` |
-| Change (`confirm: true`) | `server_power`, `scale_container_service`, `restart_container_service`, `set_dns_record`, `create_bucket` |
+| Read | `whoami`, `list_services`, `get_service`, `list_servers`, `get_server`, `get_catalog`, `get_balance`, `get_container_environment`, `list_container_services`, `get_container_logs`, `list_buckets`, `list_objects`, `list_dns_zones`, `list_dns_records`, `list_vpcs`, `get_vpc`, `list_server_nics`, `api_get` |
+| Change (`confirm: true`) | `server_power`, `scale_container_service`, `restart_container_service`, `set_dns_record`, `create_bucket`, `create_vpc`, `rename_vpc`, `create_subnet`, `attach_server_nic`, `set_vpc_gateway`, `add_port_forward`, `server_public_ip_on` |
 | Spend money (quote first) | `create_server`, `create_container_environment`, `create_storage` |
-| Destructive (`destructiveHint`) | `delete_server`, `delete_dns_record`, `delete_container_service`, `api_request` |
+| Destructive (`destructiveHint`) | `delete_server`, `delete_dns_record`, `delete_container_service`, `delete_vpc`, `delete_subnet`, `detach_server_nic`, `remove_port_forward`, `server_public_ip_off`, `api_request` |
 
 ## Safety
 

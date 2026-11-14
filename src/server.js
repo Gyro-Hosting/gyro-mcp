@@ -190,5 +190,89 @@ export function createGyroServer({ token, apiUrl, docsUrl, docs: sharedDocs, fet
       return run(api, a.method, a.path, { query: a.query, body: a.body, idempotencyKey: key }, !!a.reveal_secrets);
     });
 
+  // ---------------------------------------------------------------- private networks (VPC, Gyro Cloud Istanbul tr-ist-1) — R2 2026-11-15
+  const VPCID = z.string().min(4).max(40).regex(/^[a-z0-9-]+$/).describe('VPC id (from list_vpcs)');
+  const SUBID = z.string().min(4).max(40).regex(/^[a-z0-9-]+$/).describe('subnet id (from get_vpc)');
+  reg('list_vpcs', 'List private networks (VPC)', 'Private networks (VPC) of the account in Gyro Cloud Istanbul (tr-ist-1) with subnets, attached servers, gateway state, limits and pricing. VPCs, subnets and private traffic are free; only the VPC gateway is billed hourly while on.' + DATA_NOTE, {}, RO,
+    async () => run(api, 'GET', '/cloud/vpcs'));
+  reg('get_vpc', 'Get a VPC', 'One VPC: CIDR, subnets (gateway IP, capacity), attached servers (private IPs), gateway (NAT, public IP, port forwards).' + DATA_NOTE, { vpc_id: VPCID }, RO,
+    async ({ vpc_id }) => run(api, 'GET', `/cloud/vpcs/${vpc_id}`));
+  reg('list_server_nics', 'Server private network cards', 'Private network cards of a Gyro Cloud Istanbul server and whether its public IP is on.' + DATA_NOTE, { server_id: id('server id') }, RO,
+    async ({ server_id }) => run(api, 'GET', `/cloud/servers/${server_id}/nics`));
+  reg('create_vpc', 'Create a VPC', 'Create a private network (VPC) in tr-ist-1 with a first subnet. CIDR: private /16-/24 (10/8, 172.16/12, 192.168/16; 10.42, 10.43, 10.200, 10.250, 10.255 are reserved). Free.',
+    { name: z.string().min(1).max(48), cidr: z.string().min(9).max(18).describe('e.g. 10.10.0.0/16'), project_id: z.number().int().min(0).optional(),
+      subnet_name: z.string().max(48).optional(), subnet_cidr: z.string().max(18).optional().describe('first subnet, e.g. 10.10.1.0/24 (default: suggested /24)'), confirm: CONFIRM }, WRITE,
+    async (a) => {
+      if (a.confirm !== true) return needConfirm(`create VPC ${a.name} ${a.cidr}.`);
+      const body = { name: a.name, cidr: a.cidr, project_id: a.project_id };
+      if (a.subnet_name || a.subnet_cidr) body.subnet = { name: a.subnet_name, cidr: a.subnet_cidr };
+      return run(api, 'POST', '/cloud/vpcs', { body });
+    });
+  reg('rename_vpc', 'Rename a VPC', 'Change the name of a VPC.', { vpc_id: VPCID, name: z.string().min(1).max(48), confirm: CONFIRM }, WRITE,
+    async ({ vpc_id, name, confirm }) => {
+      if (confirm !== true) return needConfirm(`rename VPC ${vpc_id} to ${name}.`);
+      return run(api, 'PATCH', `/cloud/vpcs/${vpc_id}`, { body: { name } });
+    });
+  reg('create_subnet', 'Create a subnet', 'Add a subnet (/20-/28, up to 4 per VPC) to a VPC. Give cidr, or prefix to get a suggested free range.',
+    { vpc_id: VPCID, name: z.string().min(1).max(48), cidr: z.string().max(18).optional(), prefix: z.number().int().min(20).max(28).optional(), confirm: CONFIRM }, WRITE,
+    async ({ vpc_id, name, cidr, prefix, confirm }) => {
+      if (confirm !== true) return needConfirm(`create subnet ${name} ${cidr || '/' + (prefix || 24)} in VPC ${vpc_id}.`);
+      return run(api, 'POST', `/cloud/vpcs/${vpc_id}/subnets`, { body: { name, cidr, prefix } });
+    });
+  reg('attach_server_nic', 'Attach a server to a subnet', 'Hot-add a private network card to a running Gyro Cloud Istanbul server (up to 3 per server, one VPC per server). Returns a task; the card is ready in seconds.',
+    { server_id: id('server id'), subnet_id: SUBID, ip: z.string().max(15).optional().describe('optional fixed private IP (default: next free)'), confirm: CONFIRM }, WRITE,
+    async ({ server_id, subnet_id, ip, confirm }) => {
+      if (confirm !== true) return needConfirm(`attach server ${server_id} to subnet ${subnet_id}${ip ? ' with IP ' + ip : ''}.`);
+      return run(api, 'POST', `/cloud/servers/${server_id}/nics`, { body: { subnet_id, ip } });
+    });
+  reg('set_vpc_gateway', 'VPC gateway (NAT) settings', 'Turn the VPC gateway on/off and set NAT and inter-subnet traffic. While the gateway is on it is billed hourly from the prepaid balance (4.99 EUR/month cap, minimum 1 hour) — tell the user before enabling. allow_no_egress=true lets you turn it off even if private-only servers lose internet access.',
+    { vpc_id: VPCID, enabled: z.boolean().optional(), nat: z.boolean().optional(), inter_subnet: z.enum(['allow', 'deny']).optional(), allow_no_egress: z.boolean().optional(), confirm: CONFIRM }, WRITE,
+    async ({ vpc_id, enabled, nat, inter_subnet, allow_no_egress, confirm }) => {
+      if (confirm !== true) return needConfirm(`VPC ${vpc_id} gateway: ${JSON.stringify({ enabled, nat, inter_subnet, allow_no_egress })}${enabled ? ' (billed hourly while on, 4.99 EUR/month cap)' : ''}.`);
+      return run(api, 'PUT', `/cloud/vpcs/${vpc_id}/gateway`, { body: { enabled, nat, inter_subnet, allow_no_egress } });
+    });
+  reg('add_port_forward', 'Add a port forward', 'Forward gateway-public-IP:public_port to a private server IP:port (gateway must be on; up to 20 per VPC).',
+    { vpc_id: VPCID, protocol: z.enum(['tcp', 'udp']), public_port: z.number().int().min(1).max(65535), target_ip: z.string().min(7).max(15), target_port: z.number().int().min(1).max(65535), confirm: CONFIRM }, WRITE,
+    async ({ vpc_id, protocol, public_port, target_ip, target_port, confirm }) => {
+      if (confirm !== true) return needConfirm(`forward ${protocol}/${public_port} on the gateway of VPC ${vpc_id} to ${target_ip}:${target_port} (this exposes that port to the internet).`);
+      return run(api, 'POST', `/cloud/vpcs/${vpc_id}/port-forwards`, { body: { protocol, public_port, target_ip, target_port } });
+    });
+  reg('server_public_ip_on', 'Turn a server public IP back on', 'Reconnect the public IPv4 of a Gyro Cloud Istanbul server (the same IP comes back).',
+    { server_id: id('server id'), confirm: CONFIRM }, WRITE,
+    async ({ server_id, confirm }) => {
+      if (confirm !== true) return needConfirm(`turn the public IP of server ${server_id} back on.`);
+      return run(api, 'POST', `/cloud/servers/${server_id}/public-ip`, { body: {} });
+    });
+  reg('server_public_ip_off', 'Turn OFF a server public IP (destructive)', 'Disconnect the public IPv4 of a Gyro Cloud Istanbul server: it is then reachable only over the private network (and the web console). Needs a ready private card; confirm_ip must be the server\'s current public IP. If the VPC gateway (NAT) is off the server loses internet access — then allow_no_egress=true is required.',
+    { server_id: id('server id'), confirm_ip: z.string().min(7).max(15).describe('the server\'s current public IP, typed by the user'), allow_no_egress: z.boolean().optional(), confirm: CONFIRM }, DESTRUCTIVE,
+    async ({ server_id, confirm_ip, allow_no_egress, confirm }) => {
+      if (confirm !== true) return needConfirm(`turn OFF the public IP ${confirm_ip} of server ${server_id}${allow_no_egress ? ' even without internet egress' : ''}. Existing public connections drop.`);
+      return run(api, 'DELETE', `/cloud/servers/${server_id}/public-ip`, { body: { confirm_ip, allow_no_egress } });
+    });
+  reg('detach_server_nic', 'Detach a private network card (destructive)', 'Remove a private network card from a server (its private IP is released).',
+    { server_id: id('server id'), nic_id: z.string().min(4).max(40).regex(/^[a-z0-9-]+$/), confirm: CONFIRM }, DESTRUCTIVE,
+    async ({ server_id, nic_id, confirm }) => {
+      if (confirm !== true) return needConfirm(`DETACH network card ${nic_id} from server ${server_id}.`);
+      return run(api, 'DELETE', `/cloud/servers/${server_id}/nics/${nic_id}`);
+    });
+  reg('remove_port_forward', 'Remove a port forward (destructive)', 'Delete a port forward of a VPC gateway.',
+    { vpc_id: VPCID, port_forward_id: z.string().min(3).max(40).regex(/^[a-z0-9-]+$/), confirm: CONFIRM }, DESTRUCTIVE,
+    async ({ vpc_id, port_forward_id, confirm }) => {
+      if (confirm !== true) return needConfirm(`DELETE port forward ${port_forward_id} of VPC ${vpc_id}.`);
+      return run(api, 'DELETE', `/cloud/vpcs/${vpc_id}/port-forwards/${port_forward_id}`);
+    });
+  reg('delete_subnet', 'DELETE a subnet (destructive)', 'Delete an empty subnet (no attached cards; the last subnet of a VPC cannot be deleted).',
+    { vpc_id: VPCID, subnet_id: SUBID, confirm: CONFIRM }, DESTRUCTIVE,
+    async ({ vpc_id, subnet_id, confirm }) => {
+      if (confirm !== true) return needConfirm(`DELETE subnet ${subnet_id} of VPC ${vpc_id}.`);
+      return run(api, 'DELETE', `/cloud/vpcs/${vpc_id}/subnets/${subnet_id}`);
+    });
+  reg('delete_vpc', 'DELETE a VPC (destructive)', 'Delete a VPC with its subnets. Detach all server cards and remove port forwards first. Cannot be undone.',
+    { vpc_id: VPCID, confirm: CONFIRM }, DESTRUCTIVE,
+    async ({ vpc_id, confirm }) => {
+      if (confirm !== true) return needConfirm(`DELETE VPC ${vpc_id} and its subnets. This cannot be undone.`);
+      return run(api, 'DELETE', `/cloud/vpcs/${vpc_id}`, { query: { confirm: 'true' }, body: { confirm: true } });
+    });
+
   return s;
 }

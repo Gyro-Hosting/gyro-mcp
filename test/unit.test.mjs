@@ -35,3 +35,26 @@ test('api client refuses path traversal and sends bearer only to the API', async
 test('no key gives a clear error', async () => {
   await assert.rejects(new GyroApi({}).call('GET', '/whoami'), /No Gyro API key/);
 });
+
+test('VPC tools: registered, destructive marked, writes need confirm (R2 2026-11-15)', async () => {
+  const { createGyroServer } = await import('../src/server.js');
+  const calls = [];
+  const fetchImpl = async (u, o) => { calls.push([o.method, String(u), o.body]); return new Response('{"data":{"ok":1}}', { status: 200 }); };
+  const t = createGyroServer({ token: 'wck_test', apiUrl: 'https://api.example/api/v1/client', fetchImpl })._registeredTools;
+  for (const n of ['list_vpcs', 'get_vpc', 'list_server_nics', 'create_vpc', 'rename_vpc', 'create_subnet', 'attach_server_nic', 'set_vpc_gateway', 'add_port_forward',
+    'server_public_ip_on', 'server_public_ip_off', 'detach_server_nic', 'remove_port_forward', 'delete_subnet', 'delete_vpc']) assert.ok(t[n], n);
+  for (const n of ['delete_vpc', 'delete_subnet', 'detach_server_nic', 'remove_port_forward', 'server_public_ip_off']) assert.equal(t[n].annotations.destructiveHint, true, n);
+  for (const n of ['list_vpcs', 'get_vpc', 'list_server_nics']) assert.equal(t[n].annotations.readOnlyHint, true, n);
+  const r = await t.delete_vpc.handler({ vpc_id: 'ab12cd34' }, {});
+  assert.match(r.content[0].text, /Not done/);
+  await t.server_public_ip_off.handler({ server_id: 5, confirm_ip: '203.0.113.10' }, {});
+  await t.create_vpc.handler({ name: 'x', cidr: '10.10.0.0/16' }, {});
+  assert.equal(calls.length, 0);
+  await t.delete_vpc.handler({ vpc_id: 'ab12cd34', confirm: true }, {});
+  assert.equal(calls[0][0], 'DELETE');
+  assert.equal(calls[0][1], 'https://api.example/api/v1/client/cloud/vpcs/ab12cd34?confirm=true');
+  await t.server_public_ip_off.handler({ server_id: 5, confirm_ip: '203.0.113.10', confirm: true }, {});
+  assert.deepEqual(JSON.parse(calls[1][2]), { confirm_ip: '203.0.113.10' });
+  await t.create_vpc.handler({ name: 'x', cidr: '10.10.0.0/16', subnet_cidr: '10.10.1.0/24', confirm: true }, {});
+  assert.equal(JSON.parse(calls[2][2]).subnet.cidr, '10.10.1.0/24');
+});
