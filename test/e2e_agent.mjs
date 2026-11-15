@@ -1,0 +1,20 @@
+// R2 #3460: get_server_agent / update_server_agent uçtan uca. node test/e2e_agent.mjs stdio|http <url> <server_id>
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+const mode = process.argv[2] || 'stdio'; const tok = process.env.GYRO_TOKEN; const sid = Number(process.argv[mode === 'stdio' ? 3 : 4]);
+const c = new Client({ name: 'gyro-mcp-e2e-agent', version: '1' });
+if (mode === 'stdio') await c.connect(new StdioClientTransport({ command: 'node', args: ['bin/gyro-mcp.js'], env: { PATH: process.env.PATH, GYRO_TOKEN: tok } }));
+else await c.connect(new StreamableHTTPClientTransport(new URL(process.argv[3]), { requestInit: { headers: { Authorization: 'Bearer ' + tok } } }));
+const txt = (r) => r.content.map((x) => x.text).join(' ');
+const tools = (await c.listTools()).tools.map((t) => t.name);
+const out = [];
+out.push(['araçlar listede', tools.includes('get_server_agent') && tools.includes('update_server_agent')]);
+const g = txt(await c.callTool({ name: 'get_server_agent', arguments: { server_id: sid } }));
+out.push(['get_server_agent sürüm 4.2', /"version":\s*"4\.2"/.test(g) || /version.*4\.2/.test(g)]);
+const u0 = txt(await c.callTool({ name: 'update_server_agent', arguments: { server_id: sid } }));
+out.push(['onaysız güncelleme yapılmaz', /Not done/.test(u0)]);
+const u1 = txt(await c.callTool({ name: 'update_server_agent', arguments: { server_id: sid, confirm: true } }));
+out.push(['güncel ajan: already_latest', /already_latest|already up to date/.test(u1)]);
+for (const [a, ok] of out) console.log(ok ? 'GEÇTİ' : 'KALDI', a);
+await c.close(); process.exit(out.every((x) => x[1]) ? 0 : 1);
