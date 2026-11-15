@@ -45,11 +45,13 @@ test('VPC tools: registered, destructive marked, writes need confirm (R2 2026-11
     'server_public_ip_on', 'server_public_ip_off', 'detach_server_nic', 'remove_port_forward', 'delete_subnet', 'delete_vpc',
     'vpc_port_forward_update', 'container_vpc_get', 'container_vpc_attach', 'container_vpc_expose', 'container_vpc_detach']) assert.ok(t[n], n);
   for (const n of ['delete_vpc', 'delete_subnet', 'detach_server_nic', 'remove_port_forward', 'server_public_ip_off', 'container_vpc_detach']) assert.equal(t[n].annotations.destructiveHint, true, n);
-  for (const n of ['list_vpcs', 'get_vpc', 'list_server_nics']) assert.equal(t[n].annotations.readOnlyHint, true, n);
+  for (const n of ['list_vpcs', 'get_vpc', 'list_server_nics', 'get_server_agent']) assert.equal(t[n].annotations.readOnlyHint, true, n);
+  assert.equal(t.update_server_agent.annotations.destructiveHint, false);
   const r = await t.delete_vpc.handler({ vpc_id: 'ab12cd34' }, {});
   assert.match(r.content[0].text, /Not done/);
   await t.server_public_ip_off.handler({ server_id: 5, confirm_ip: '203.0.113.10' }, {});
   await t.create_vpc.handler({ name: 'x', cidr: '10.10.0.0/16' }, {});
+  await t.update_server_agent.handler({ server_id: 5 }, {});
   assert.equal(calls.length, 0);
   await t.delete_vpc.handler({ vpc_id: 'ab12cd34', confirm: true }, {});
   assert.equal(calls[0][0], 'DELETE');

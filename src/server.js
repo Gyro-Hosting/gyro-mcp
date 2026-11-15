@@ -261,6 +261,14 @@ export function createGyroServer({ token, apiUrl, docsUrl, docs: sharedDocs, fet
     async ({ vpc_id }) => run(api, 'GET', `/cloud/vpcs/${vpc_id}`));
   reg('list_server_nics', 'Server private network cards', 'Private network cards of a Gyro Cloud Istanbul server and whether its public IP is on.' + DATA_NOTE, { server_id: id('server id') }, RO,
     async ({ server_id }) => run(api, 'GET', `/cloud/servers/${server_id}/nics`));
+  reg('get_server_agent', 'Server guest agent version', 'Gyro guest agent version of a Gyro Cloud Istanbul server. Servers installed before private networking (14 Nov 2026) need an agent update: until then a private card is attached but not configured inside the server (network_applied=false) and the public IP cannot be turned off (agent_update_required). update_command is a one-line command the user runs on the server as root; auto_update=true means update_server_agent can do it.' + DATA_NOTE, { server_id: id('server id') }, RO,
+    async ({ server_id }) => run(api, 'GET', `/cloud/servers/${server_id}/agent`));
+  reg('update_server_agent', 'Update the server guest agent', 'Automatically update the Gyro guest agent of a Gyro Cloud Istanbul server (agent 3 or unknown version; about 30 s, the server keeps running, data untouched). Older agents answer manual_update_required: then give the user update_command from get_server_agent. If the user configured the private card with their own netplan file, tell them to delete it and run netplan apply afterwards.',
+    { server_id: id('server id'), confirm: CONFIRM }, WRITE,
+    async ({ server_id, confirm }) => {
+      if (confirm !== true) return needConfirm(`update the Gyro guest agent on server ${server_id} (only the agent is replaced; no restart).`);
+      return run(api, 'POST', `/cloud/servers/${server_id}/agent/update`, { body: {} });
+    });
   reg('create_vpc', 'Create a VPC', 'Create a private network (VPC) in tr-ist-1 with a first subnet. CIDR: private /16-/24 (10/8, 172.16/12, 192.168/16; 10.42, 10.43, 10.200, 10.250, 10.255 are reserved). Free.',
     { name: z.string().min(1).max(48), cidr: z.string().min(9).max(18).describe('e.g. 10.10.0.0/16'), project_id: z.number().int().min(0).optional(),
       subnet_name: z.string().max(48).optional(), subnet_cidr: z.string().max(18).optional().describe('first subnet, e.g. 10.10.1.0/24 (default: suggested /24)'), confirm: CONFIRM }, WRITE,
