@@ -208,3 +208,20 @@ test('#3462: port forward name, add-on purchase (confirm + idempotency), registr
   assert.equal(JSON.parse(c[2]).confirm, true);
   assert.ok(c[3], 'idempotency key sent');
 });
+
+test('#3462 madde 10: snapshot schedule tools (API 2.40.0, R2 2026-11-15)', async () => {
+  const { createGyroServer } = await import('../src/server.js');
+  const calls = [];
+  const fetchImpl = async (u, o) => { calls.push([o.method, String(u), o.body]); return new Response('{"data":{"configured":true}}', { status: 200 }); };
+  const t = createGyroServer({ token: 'wck_test', apiUrl: 'https://api.example/api/v1/client', fetchImpl })._registeredTools;
+  assert.equal(t.delete_snapshot_schedule.annotations.destructiveHint, true);
+  let r = await t.set_snapshot_schedule.handler({ server_id: 701, frequency: 'weekly', weekday: 'monday', hour: 4, keep: 2 }, {});
+  assert.match(r.content[0].text, /Not done.*billed hourly/s);
+  assert.equal(calls.length, 0);
+  await t.set_snapshot_schedule.handler({ server_id: 701, frequency: 'weekly', weekday: 'monday', hour: 4, keep: 2, confirm: true }, {});
+  assert.equal(calls[0][0], 'PUT');
+  assert.match(calls[0][1], /\/cloud\/servers\/701\/snapshot-schedule$/);
+  assert.deepEqual(JSON.parse(calls[0][2]), { frequency: 'weekly', weekday: 'monday', hour: 4, keep: 2 });
+  await t.get_snapshot_schedule.handler({ server_id: 701 }, {});
+  assert.equal(calls[1][0], 'GET');
+});

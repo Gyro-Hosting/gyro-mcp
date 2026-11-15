@@ -375,6 +375,25 @@ export function createGyroServer({ token, apiUrl, docsUrl, docs: sharedDocs, fet
       return run(api, 'PUT', `/cloud/containers/${service_id}/registry/policy`, { body: { enabled, keep, untagged_days } });
     });
 
+  // ---------------------------------------------------------------- scheduled snapshots (tr-ist-1, API 2.40.0, #3462)
+  const WD = z.enum(['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']);
+  reg('get_snapshot_schedule', 'Scheduled snapshots of a server', 'Automatic snapshot schedule of a Gyro Cloud Istanbul server: daily or weekly at a Türkiye time, the last `keep` automatic snapshots kept, next and last run, why a run was skipped. configured=false = no schedule.' + DATA_NOTE,
+    { server_id: id('server id') }, RO,
+    async ({ server_id }) => run(api, 'GET', `/cloud/servers/${server_id}/snapshot-schedule`));
+  reg('set_snapshot_schedule', 'Create or change the snapshot schedule', 'Automatic snapshots of a Gyro Cloud Istanbul server (named auto-YYYYMMDD-HHMM; the oldest automatic ones are deleted so `keep` stay; manual snapshots are never deleted but count toward the snapshot limit). Fields left out keep their value; a new schedule starts from daily 03:00, keep 7. Snapshots above the free allowance of a prepaid server are billed hourly - say so. While a server has snapshots its extra disks cannot be grown.',
+    { server_id: id('server id'), enabled: z.boolean().optional(), frequency: z.enum(['daily', 'weekly']).optional(), weekday: WD.optional().describe('weekly only'),
+      hour: z.number().int().min(0).max(23).optional().describe('Türkiye time'), minute: z.number().int().min(0).max(59).optional(), keep: z.number().int().min(1).max(20).optional(), confirm: CONFIRM }, WRITE,
+    async ({ server_id, confirm, ...b }) => {
+      if (confirm !== true) return needConfirm(`snapshot schedule of server ${server_id}: ${JSON.stringify(b)} (extra snapshots above the free allowance are billed hourly).`);
+      return run(api, 'PUT', `/cloud/servers/${server_id}/snapshot-schedule`, { body: b });
+    });
+  reg('delete_snapshot_schedule', 'Remove the snapshot schedule (destructive)', 'Remove the automatic snapshot schedule of a server; existing snapshots stay.',
+    { server_id: id('server id'), confirm: CONFIRM }, DESTRUCTIVE,
+    async ({ server_id, confirm }) => {
+      if (confirm !== true) return needConfirm(`REMOVE the automatic snapshot schedule of server ${server_id} (snapshots already taken stay).`);
+      return run(api, 'DELETE', `/cloud/servers/${server_id}/snapshot-schedule`);
+    });
+
   // ---------------------------------------------------------------- private networks (VPC, Gyro Cloud Istanbul tr-ist-1) — R2 2026-11-15
   const VPCID = z.string().min(4).max(40).regex(/^[a-z0-9-]+$/).describe('VPC id (from list_vpcs)');
   const SUBID = z.string().min(4).max(40).regex(/^[a-z0-9-]+$/).describe('subnet id (from get_vpc)');
