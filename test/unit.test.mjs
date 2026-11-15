@@ -132,3 +132,31 @@ test('container schedule tools: registered, writes need confirm, headers hidden 
   await t.delete_container_schedule.handler({ environment_id: 17000, schedule: 'nightly-report', confirm: true }, {});
   assert.equal(calls[3][0], 'DELETE');
 });
+
+test('bucket event tools: registered, writes need confirm, secret shown on create (GYR-18, R2 2026-11-15)', async () => {
+  const { createGyroServer } = await import('../src/server.js');
+  const calls = [];
+  const fetchImpl = async (u, o) => { calls.push([o.method, String(u), o.body]); return new Response('{"data":{"item":{"id":7,"secret":"ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"}}}', { status: 202 }); };
+  const t = createGyroServer({ token: 'wck_test', apiUrl: 'https://api.example/api/v1/client', fetchImpl })._registeredTools;
+  const all = ['list_bucket_events', 'get_bucket_event_usage', 'list_bucket_event_deliveries', 'create_bucket_event', 'update_bucket_event', 'test_bucket_event', 'rotate_bucket_event_secret', 'delete_bucket_event'];
+  for (const n of all) assert.ok(t[n], n);
+  for (const n of all.slice(0, 3)) assert.equal(t[n].annotations.readOnlyHint, true, n);
+  assert.equal(t.delete_bucket_event.annotations.destructiveHint, true);
+  assert.equal(t.rotate_bucket_event_secret.annotations.destructiveHint, true);
+  let r = await t.create_bucket_event.handler({ storage_id: 17000, bucket: 'gyro-proje', url: 'https://ornek.com/s3-olay' }, {});
+  assert.match(r.content[0].text, /Not done/);
+  assert.equal(calls.length, 0);
+  r = await t.create_bucket_event.handler({ storage_id: 17000, bucket: 'gyro-proje', url: 'https://ornek.com/s3-olay', events: ['storage.object.created'], suffix: ['.jpg'], confirm: true }, {});
+  assert.equal(calls[0][0], 'POST');
+  assert.equal(calls[0][1], 'https://api.example/api/v1/client/cloud/storage/17000/buckets/gyro-proje/events');
+  assert.deepEqual(JSON.parse(calls[0][2]), { url: 'https://ornek.com/s3-olay', events: ['storage.object.created'], suffix: ['.jpg'] });
+  assert.match(JSON.stringify(r.content), /ab12ab12/);
+  await t.list_bucket_events.handler({ storage_id: 17000 }, {});
+  assert.equal(calls[1][1], 'https://api.example/api/v1/client/cloud/storage/17000/events');
+  await t.update_bucket_event.handler({ storage_id: 17000, webhook_id: 7, status: 'disabled', confirm: true }, {});
+  assert.equal(calls[2][0], 'PATCH');
+  assert.deepEqual(JSON.parse(calls[2][2]), { status: 'disabled' });
+  await t.delete_bucket_event.handler({ storage_id: 17000, webhook_id: 7, confirm: true }, {});
+  assert.equal(calls[3][0], 'DELETE');
+  assert.equal(calls[3][1], 'https://api.example/api/v1/client/cloud/storage/17000/events/7');
+});

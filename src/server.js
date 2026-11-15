@@ -244,6 +244,53 @@ export function createGyroServer({ token, apiUrl, docsUrl, docs: sharedDocs, fet
       if (confirm !== true) return needConfirm(`create bucket ${bucket} in storage service ${storage_id}.`);
       return run(api, 'POST', `/cloud/storage/${storage_id}/buckets`, { body: { bucket, confirm: true } });
     });
+  // ---------------------------------------------------------------- S3 bucket event notifications (GYR-18, Gyro Public API 2.37.0)
+  const EVT = z.enum(['storage.object.created', 'storage.object.deleted', 'storage.objects.deleted_bulk']);
+  const BKT = z.string().min(1).max(100).describe('bucket name');
+  const HOOK = id('event webhook id');
+  reg('list_bucket_events', 'S3 bucket event webhooks', 'Event notification webhooks of an Object / Protected Storage service (all buckets, or one bucket), with delivery state, plus this month\'s event allowance.' + DATA_NOTE,
+    { storage_id: id('storage service id'), bucket: BKT.optional() }, RO,
+    async ({ storage_id, bucket }) => run(api, 'GET', bucket ? `/cloud/storage/${storage_id}/buckets/${encodeURIComponent(bucket)}/events` : `/cloud/storage/${storage_id}/events`));
+  reg('get_bucket_event_usage', 'S3 event allowance', 'Bucket event allowance of this month: free per bucket, event packs, used, dropped (allowance used up / rate), delivered and failed counts. No overage invoice: when the allowance is used up new events are not sent.' + DATA_NOTE,
+    { storage_id: id('storage service id') }, RO,
+    async ({ storage_id }) => run(api, 'GET', `/cloud/storage/${storage_id}/events/usage`));
+  reg('list_bucket_event_deliveries', 'S3 event deliveries', 'The last 20 deliveries of an event webhook (sent / failed / retrying, HTTP code, error, attempts).' + DATA_NOTE,
+    { storage_id: id('storage service id'), webhook_id: HOOK }, RO,
+    async ({ storage_id, webhook_id }) => run(api, 'GET', `/cloud/storage/${storage_id}/events/${webhook_id}/deliveries`));
+  reg('create_bucket_event', 'Add an S3 bucket event webhook', 'Send a signed HTTPS POST to url when an object is created / deleted / bulk deleted in the bucket. url: https, port 443 or 8443, public internet. ' +
+    'Optional filters prefix (key starts with) and suffix (ends with one of, at most 10). The answer contains the signing secret ONCE (X-Gyro-Signature = sha256=HMAC-SHA256(secret, X-Gyro-Timestamp + "." + raw body)): tell the user to store it.',
+    { storage_id: id('storage service id'), bucket: BKT, url: z.string().url().max(500), events: z.array(EVT).min(1).max(3).optional().describe('default: all three'),
+      prefix: z.string().max(512).optional(), suffix: z.array(z.string().min(1).max(32)).max(10).optional(), description: z.string().max(128).optional(), confirm: CONFIRM }, WRITE,
+    async ({ storage_id, bucket, url, events, prefix, suffix, description, confirm }) => {
+      if (confirm !== true) return needConfirm(`add an event webhook to bucket ${bucket} (storage ${storage_id}) -> ${url}${events ? ' events ' + events.join(',') : ''}${prefix ? ' prefix ' + prefix : ''}${suffix ? ' suffix ' + suffix.join(',') : ''}.`);
+      return run(api, 'POST', `/cloud/storage/${storage_id}/buckets/${encodeURIComponent(bucket)}/events`, { body: { url, events, prefix, suffix, description } }, true,
+        'The "secret" value is shown only now: the user must store it to verify X-Gyro-Signature. It cannot be read again (rotate_bucket_event_secret makes a new one).');
+    });
+  reg('update_bucket_event', 'Change an S3 bucket event webhook', 'Change only the given fields of an event webhook (url, events, prefix, suffix, description, status active / disabled; enabling resets the failure counter).',
+    { storage_id: id('storage service id'), webhook_id: HOOK, url: z.string().url().max(500).optional(), events: z.array(EVT).min(1).max(3).optional(), prefix: z.string().max(512).optional(),
+      suffix: z.array(z.string().min(1).max(32)).max(10).optional(), description: z.string().max(128).optional(), status: z.enum(['active', 'disabled']).optional(), confirm: CONFIRM }, WRITE,
+    async ({ storage_id, webhook_id, confirm, ...b }) => {
+      if (confirm !== true) return needConfirm(`change event webhook ${webhook_id} of storage ${storage_id}: ${Object.keys(b).filter((k) => b[k] !== undefined).join(', ') || 'nothing'}.`);
+      return run(api, 'PATCH', `/cloud/storage/${storage_id}/events/${webhook_id}`, { body: b });
+    });
+  reg('test_bucket_event', 'Send a test S3 event', 'Send a storage.test event to the webhook now and return whether it was delivered (HTTP code / error). Not counted against the allowance.',
+    { storage_id: id('storage service id'), webhook_id: HOOK, confirm: CONFIRM }, WRITE,
+    async ({ storage_id, webhook_id, confirm }) => {
+      if (confirm !== true) return needConfirm(`send a test event to webhook ${webhook_id} of storage ${storage_id}.`);
+      return run(api, 'POST', `/cloud/storage/${storage_id}/events/${webhook_id}/test`, { body: {} });
+    });
+  reg('rotate_bucket_event_secret', 'Rotate an S3 event webhook secret', 'Create a new signing secret (returned once). Deliveries are signed with it from the next event; the old one stops working.',
+    { storage_id: id('storage service id'), webhook_id: HOOK, confirm: CONFIRM }, DESTRUCTIVE,
+    async ({ storage_id, webhook_id, confirm }) => {
+      if (confirm !== true) return needConfirm(`replace the signing secret of event webhook ${webhook_id} (storage ${storage_id}); the receiver must be updated.`);
+      return run(api, 'POST', `/cloud/storage/${storage_id}/events/${webhook_id}/rotate-secret`, { body: { confirm: true } }, true, 'The new "secret" is shown only now.');
+    });
+  reg('delete_bucket_event', 'Delete an S3 bucket event webhook', 'Delete an event webhook; pending events are not sent.',
+    { storage_id: id('storage service id'), webhook_id: HOOK, confirm: CONFIRM }, DESTRUCTIVE,
+    async ({ storage_id, webhook_id, confirm }) => {
+      if (confirm !== true) return needConfirm(`delete event webhook ${webhook_id} of storage ${storage_id}.`);
+      return run(api, 'DELETE', `/cloud/storage/${storage_id}/events/${webhook_id}`, { body: { confirm: true } });
+    });
 
   // ---------------------------------------------------------------- money (dry run first)
   const money = (tool, path, buildBody, describe) => async (args) => {
