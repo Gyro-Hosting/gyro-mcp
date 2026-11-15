@@ -179,3 +179,32 @@ test('container_vpc_attach: serverless price in the question, confirm sent (API 
   assert.equal(calls[1][0], 'PUT');
   assert.equal(JSON.parse(calls[1][2]).confirm, true);
 });
+
+test('#3462: port forward name, add-on purchase (confirm + idempotency), registry policy (R2 2026-11-15)', async () => {
+  const { createGyroServer } = await import('../src/server.js');
+  const calls = [];
+  const fetchImpl = async (u, o) => {
+    calls.push([o.method, String(u), o.body, o.headers['Idempotency-Key']]);
+    if (String(u).endsWith('/addons/available')) return new Response('{"data":{"addons":[{"addon_id":181,"name":"Network Firewall","options":[{"id":0}]}]}}', { status: 200 });
+    if (String(u).endsWith('/addons') && o.method === 'GET') return new Response('{"data":{"addons":[]}}', { status: 200 });
+    return new Response('{"data":{"status":"successful"}}', { status: 200 });
+  };
+  const t = createGyroServer({ token: 'wck_test', apiUrl: 'https://api.example/api/v1/client', fetchImpl })._registeredTools;
+  for (const n of ['list_service_addons', 'buy_service_addon', 'remove_service_addon', 'set_container_registry_policy']) assert.ok(t[n], n);
+  assert.equal(t.remove_service_addon.annotations.destructiveHint, true);
+  let r = await t.vpc_port_forward_update.handler({ vpc_id: 'ab12cd34', port_forward_id: 'pfab12', name: 'ssh-admin' }, {});
+  assert.match(r.content[0].text, /Not done.*name "ssh-admin"/s);
+  await t.vpc_port_forward_update.handler({ vpc_id: 'ab12cd34', port_forward_id: 'pfab12', name: 'ssh-admin', confirm: true }, {});
+  assert.deepEqual(JSON.parse(calls.at(-1)[2]), { name: 'ssh-admin' });
+  r = await t.list_service_addons.handler({ service_id: 501 }, {});
+  assert.match(r.content[0].text, /Network Firewall/);
+  const n = calls.length;
+  r = await t.buy_service_addon.handler({ service_id: 501, addon_id: 181, option_id: 0 }, {});
+  assert.match(r.content[0].text, /Not done.*charged/s);
+  assert.equal(calls.length, n);
+  await t.buy_service_addon.handler({ service_id: 501, addon_id: 181, option_id: 0, confirm: true }, {});
+  const c = calls.at(-1);
+  assert.equal(c[0], 'POST');
+  assert.equal(JSON.parse(c[2]).confirm, true);
+  assert.ok(c[3], 'idempotency key sent');
+});

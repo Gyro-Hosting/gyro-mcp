@@ -345,6 +345,36 @@ export function createGyroServer({ token, apiUrl, docsUrl, docs: sharedDocs, fet
       return run(api, a.method, a.path, { query: a.query, body: a.body, idempotencyKey: key }, !!a.reveal_secrets);
     });
 
+  // ---------------------------------------------------------------- service add-ons + registry policy (#3462, R2 2026-11-15)
+  reg('list_service_addons', 'Service add-ons (available and owned)', 'Add-ons that can be bought for a service (addon_id, option ids, prices; prepaid services: hourly price) and the add-ons it already holds (record id, status, billing, removable). E.g. the Network Firewall add-on that firewall rules need.' + DATA_NOTE,
+    { service_id: id('service id') }, RO,
+    async ({ service_id }) => {
+      try {
+        const a = await api.call('GET', `/cloud/services/${service_id}/addons/available`);
+        if (!a.ok) return run(api, 'GET', `/cloud/services/${service_id}/addons/available`);
+        const o = await api.call('GET', `/cloud/services/${service_id}/addons`);
+        return asData(mask({ available: a.json && a.json.data, owned: o.ok ? o.json && o.json.data : (o.json && o.json.error) }, false));
+      } catch (e) { return apiErr(e); }
+    });
+  reg('buy_service_addon', 'Buy a service add-on (spends money)', 'Buy an add-on for a service (POST /cloud/services/{id}/addons). Prepaid services (Gyro Cloud Istanbul, containers): charged hourly from the balance, active at once. Invoiced services: an invoice is created and paid from the balance. Tell the user the price from list_service_addons first; without confirm=true nothing is bought.',
+    { service_id: id('service id'), addon_id: z.number().int().min(1), option_id: z.number().int().min(0), quantity: z.number().int().min(1).max(100).optional(), idempotency_key: IDEM, confirm: CONFIRM }, WRITE,
+    async (a) => {
+      if (a.confirm !== true) return needConfirm(`BUY add-on ${a.addon_id} (option ${a.option_id}, quantity ${a.quantity || 1}) for service ${a.service_id} - this is charged.`);
+      return run(api, 'POST', `/cloud/services/${a.service_id}/addons`, { body: { addon_id: a.addon_id, option_id: a.option_id, quantity: a.quantity || 1, confirm: true }, idempotencyKey: a.idempotency_key || idemKey('buy_service_addon', a) });
+    });
+  reg('remove_service_addon', 'Remove a prepaid add-on (destructive)', 'Turn a prepaid add-on off at once (billing stops). Invoiced add-ons cannot be removed through the API (cancel them in the panel). record_id comes from list_service_addons (owned).',
+    { service_id: id('service id'), record_id: z.number().int().min(1), confirm: CONFIRM }, DESTRUCTIVE,
+    async ({ service_id, record_id, confirm }) => {
+      if (confirm !== true) return needConfirm(`REMOVE add-on record ${record_id} of service ${service_id} (the feature it provides stops at once).`);
+      return run(api, 'DELETE', `/cloud/services/${service_id}/addons/${record_id}`, { query: { confirm: 'true' }, body: { confirm: true } });
+    });
+  reg('set_container_registry_policy', 'Container registry clean-up policy', 'Clean-up policy of the private image registry of a container environment: images of the last `keep` revisions of every service are always kept; other tags older than `untagged_days` are deleted. Default: enabled, keep 10, 7 days.',
+    { service_id: id('container environment (service) id'), enabled: z.boolean().optional(), keep: z.number().int().min(1).max(50).optional(), untagged_days: z.number().int().min(1).max(90).optional(), confirm: CONFIRM }, WRITE,
+    async ({ service_id, enabled, keep, untagged_days, confirm }) => {
+      if (confirm !== true) return needConfirm(`registry policy of environment ${service_id}: ${JSON.stringify({ enabled, keep, untagged_days })}.`);
+      return run(api, 'PUT', `/cloud/containers/${service_id}/registry/policy`, { body: { enabled, keep, untagged_days } });
+    });
+
   // ---------------------------------------------------------------- private networks (VPC, Gyro Cloud Istanbul tr-ist-1) — R2 2026-11-15
   const VPCID = z.string().min(4).max(40).regex(/^[a-z0-9-]+$/).describe('VPC id (from list_vpcs)');
   const SUBID = z.string().min(4).max(40).regex(/^[a-z0-9-]+$/).describe('subnet id (from get_vpc)');
@@ -395,18 +425,23 @@ export function createGyroServer({ token, apiUrl, docsUrl, docs: sharedDocs, fet
       return run(api, 'PUT', `/cloud/vpcs/${vpc_id}/gateway`, { body: { enabled, nat, inter_subnet, allow_no_egress } });
     });
   const SOURCES = z.array(z.string().min(7).max(18)).max(20).describe('allowed source public IPv4 networks, e.g. ["203.0.113.10/32","198.51.100.0/24"] (a single IP is /32); empty = everyone');
-  reg('add_port_forward', 'Add a port forward', 'Forward gateway-public-IP:public_port to a private server IP:port (gateway must be on; up to 20 per VPC). source_cidrs limits who may use it (recommended for SSH/RDP/databases); left out = everyone.',
-    { vpc_id: VPCID, protocol: z.enum(['tcp', 'udp']), public_port: z.number().int().min(1).max(65535), target_ip: z.string().min(7).max(15), target_port: z.number().int().min(1).max(65535), source_cidrs: SOURCES.optional(), confirm: CONFIRM }, WRITE,
-    async ({ vpc_id, protocol, public_port, target_ip, target_port, source_cidrs, confirm }) => {
+  const PFNAME = z.string().max(64).describe('label of the forward, e.g. "ssh-admin" (at most 64 characters; "" removes it)');
+  reg('add_port_forward', 'Add a port forward', 'Forward gateway-public-IP:public_port to a private server IP:port (gateway must be on; up to 20 per VPC). source_cidrs limits who may use it (recommended for SSH/RDP/databases); left out = everyone. name is an optional label.',
+    { vpc_id: VPCID, protocol: z.enum(['tcp', 'udp']), public_port: z.number().int().min(1).max(65535), target_ip: z.string().min(7).max(15), target_port: z.number().int().min(1).max(65535), source_cidrs: SOURCES.optional(), name: PFNAME.optional(), confirm: CONFIRM }, WRITE,
+    async ({ vpc_id, protocol, public_port, target_ip, target_port, source_cidrs, name, confirm }) => {
       const who = source_cidrs && source_cidrs.length ? ` from ${source_cidrs.join(', ')} only` : ' (this exposes that port to the whole internet)';
-      if (confirm !== true) return needConfirm(`forward ${protocol}/${public_port} on the gateway of VPC ${vpc_id} to ${target_ip}:${target_port}${who}.`);
-      return run(api, 'POST', `/cloud/vpcs/${vpc_id}/port-forwards`, { body: { protocol, public_port, target_ip, target_port, source_cidrs } });
+      if (confirm !== true) return needConfirm(`forward ${protocol}/${public_port} on the gateway of VPC ${vpc_id} to ${target_ip}:${target_port}${who}${name ? ` (name "${name}")` : ''}.`);
+      return run(api, 'POST', `/cloud/vpcs/${vpc_id}/port-forwards`, { body: { protocol, public_port, target_ip, target_port, source_cidrs, name } });
     });
-  reg('vpc_port_forward_update', 'Change who may use a port forward', 'Replace the source allow list (source_cidrs) of a VPC gateway port forward: only these public IPv4 networks may connect. An empty list opens it to everyone.',
-    { vpc_id: VPCID, port_forward_id: z.string().min(3).max(40).regex(/^[a-z0-9-]+$/), source_cidrs: SOURCES, confirm: CONFIRM }, WRITE,
-    async ({ vpc_id, port_forward_id, source_cidrs, confirm }) => {
-      if (confirm !== true) return needConfirm(`port forward ${port_forward_id} of VPC ${vpc_id}: allow ${source_cidrs.length ? source_cidrs.join(', ') + ' only' : 'EVERYONE (open to the internet)'}.`);
-      return run(api, 'PATCH', `/cloud/vpcs/${vpc_id}/port-forwards/${port_forward_id}`, { body: { source_cidrs } });
+  reg('vpc_port_forward_update', 'Change a port forward (sources, name)', 'Change a VPC gateway port forward: source_cidrs replaces the allow list (only these public IPv4 networks may connect; an empty list opens it to everyone), name renames it (label only, the gateway is not touched). Send at least one of them; a field left out does not change.',
+    { vpc_id: VPCID, port_forward_id: z.string().min(3).max(40).regex(/^[a-z0-9-]+$/), source_cidrs: SOURCES.optional(), name: PFNAME.optional(), confirm: CONFIRM }, WRITE,
+    async ({ vpc_id, port_forward_id, source_cidrs, name, confirm }) => {
+      if (source_cidrs === undefined && name === undefined) return needConfirm('nothing to change: give source_cidrs and/or name.');
+      const parts = [];
+      if (source_cidrs !== undefined) parts.push(`allow ${source_cidrs.length ? source_cidrs.join(', ') + ' only' : 'EVERYONE (open to the internet)'}`);
+      if (name !== undefined) parts.push(`name "${name}"`);
+      if (confirm !== true) return needConfirm(`port forward ${port_forward_id} of VPC ${vpc_id}: ${parts.join('; ')}.`);
+      return run(api, 'PATCH', `/cloud/vpcs/${vpc_id}/port-forwards/${port_forward_id}`, { body: { source_cidrs, name } });
     });
   reg('server_public_ip_on', 'Turn a server public IP back on', 'Reconnect the public IPv4 of a Gyro Cloud Istanbul server (the same IP comes back).',
     { server_id: id('server id'), confirm: CONFIRM }, WRITE,
