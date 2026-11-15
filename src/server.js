@@ -185,6 +185,52 @@ export function createGyroServer({ token, apiUrl, docsUrl, docs: sharedDocs, fet
       if (confirm !== true) return needConfirm(`stop job ${job_id} in environment ${environment_id}.`);
       return run(api, 'DELETE', `/cloud/containers/${environment_id}/jobs/${job_id}`);
     });
+  // GYR-12 (API 2.36.0): scheduled jobs (cron / every N minutes / once; a service command or an HTTP call)
+  const SCHED = z.string().min(2).max(40).regex(/^[a-z0-9-]+$/).describe('schedule name or id');
+  const TIMING = { cron: z.string().max(120).optional().describe('cron expression, 5 fields: minute hour day month weekday, e.g. "0 3 * * *"; @daily / @hourly'),
+    rate_minutes: z.number().int().min(1).max(10080).optional().describe('every N minutes (Serverless at least 5)'),
+    at: z.string().max(40).optional().describe('once: "2026-12-01T03:00" in the time zone, or RFC 3339'),
+    timezone: z.string().max(64).optional().describe('IANA time zone, default Europe/Istanbul') };
+  const SCHED_BODY = { ...TIMING, description: z.string().max(200).optional(), service: z.string().max(64).optional().describe('service target: whose image, variables and secrets the command uses'),
+    command: z.array(z.string().max(4096)).max(50).optional().describe('command list (replaces ENTRYPOINT), e.g. ["npm","run","report"]'),
+    timeout_seconds: z.number().int().min(10).max(21600).optional(), cpu_m: z.number().int().min(0).optional(), memory_mi: z.number().int().min(0).optional(),
+    url: z.string().max(2048).optional().describe('HTTP target: http(s) URL called from the environment (no redirects; 400+ fails)'),
+    method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD']).optional(), headers: z.record(z.string().max(4096)).optional().describe('HTTP headers, kept secret (never returned)'),
+    body: z.string().max(65536).optional(), http_timeout_seconds: z.number().int().min(1).max(120).optional(),
+    retries: z.number().int().min(0).max(3).optional().describe('retries after a failed run (30 s × attempt apart)'), paused: z.boolean().optional() };
+  reg('list_container_schedules', 'Container scheduled jobs', 'Scheduled jobs (cron) of a container environment with timing, time zone, next run and the last run state; plus the schedule limit.' + DATA_NOTE,
+    { environment_id: id('container environment id') }, RO, async ({ environment_id }) => run(api, 'GET', `/cloud/containers/${environment_id}/schedules`));
+  reg('get_container_schedule', 'Container scheduled job', 'One scheduled job with its last 20 runs (state, attempts, job ids for get_container_job).' + DATA_NOTE,
+    { environment_id: id('container environment id'), schedule: SCHED }, RO, async ({ environment_id, schedule }) => run(api, 'GET', `/cloud/containers/${environment_id}/schedules/${schedule}`));
+  reg('preview_container_schedule', 'Next run times of a timing', 'Checks a cron expression / interval / one-time date with its time zone and returns the next run times. Nothing is saved.',
+    { environment_id: id('container environment id'), ...TIMING, count: z.number().int().min(1).max(20).optional() }, RO,
+    async ({ environment_id, ...b }) => run(api, 'POST', `/cloud/containers/${environment_id}/schedules/preview`, { body: b }));
+  reg('create_container_schedule', 'Create a container scheduled job', 'Run a service command (as a one-off job with the running image, variables and secrets) or call a URL on a schedule: exactly one of cron, rate_minutes, at. A run never overlaps the previous one; failures notify after the last retry. Free on node plans; on Serverless each run is billed like a task.',
+    { environment_id: id('container environment id'), name: z.string().min(2).max(40).regex(/^[a-z][a-z0-9-]*[a-z0-9]$/), ...SCHED_BODY, confirm: CONFIRM }, WRITE,
+    async ({ environment_id, confirm, ...b }) => {
+      if (confirm !== true) return needConfirm(`create schedule ${b.name} in environment ${environment_id} (${b.cron || (b.rate_minutes ? 'every ' + b.rate_minutes + ' min' : 'once at ' + b.at)}${b.url ? ', calls ' + b.url : ', runs ' + JSON.stringify(b.command || []) + ' in service ' + b.service}).`);
+      return run(api, 'POST', `/cloud/containers/${environment_id}/schedules`, { body: b, idempotencyKey: idemKey() });
+    });
+  reg('update_container_schedule', 'Change a container scheduled job', 'Change only the given fields of a schedule (timing, command, URL, retries, paused...). Headers / body: omitted = kept.',
+    { environment_id: id('container environment id'), schedule: SCHED, ...SCHED_BODY, confirm: CONFIRM }, WRITE,
+    async ({ environment_id, schedule, confirm, ...b }) => {
+      if (confirm !== true) return needConfirm(`change schedule ${schedule} in environment ${environment_id}: ${JSON.stringify({ ...b, headers: b.headers ? '(hidden)' : undefined, body: b.body ? '(hidden)' : undefined })}.`);
+      return run(api, 'PATCH', `/cloud/containers/${environment_id}/schedules/${schedule}`, { body: b });
+    });
+  for (const [tool, verb, title] of [['pause_container_schedule', 'pause', 'Pause'], ['resume_container_schedule', 'resume', 'Resume'], ['run_container_schedule_now', 'run', 'Run now']]) {
+    reg(tool, `${title}: container scheduled job`, verb === 'run' ? 'Start one run of the schedule now (refused while a run of it is going). Returns the run and its job id.' : `${title} a scheduled job${verb === 'resume' ? ' (the next run is counted from now)' : ' (a run in progress finishes)'}.`,
+      { environment_id: id('container environment id'), schedule: SCHED, confirm: CONFIRM }, WRITE,
+      async ({ environment_id, schedule, confirm }) => {
+        if (confirm !== true) return needConfirm(`${verb === 'run' ? 'run schedule ' + schedule + ' now' : verb + ' schedule ' + schedule} in environment ${environment_id}.`);
+        return run(api, 'POST', `/cloud/containers/${environment_id}/schedules/${schedule}/${verb}`, verb === 'run' ? { idempotencyKey: idemKey() } : {});
+      });
+  }
+  reg('delete_container_schedule', 'Delete a container scheduled job', 'Delete a schedule and its stored HTTP headers / body. Outputs of past runs stay in the job list.',
+    { environment_id: id('container environment id'), schedule: SCHED, confirm: CONFIRM }, DESTRUCTIVE,
+    async ({ environment_id, schedule, confirm }) => {
+      if (confirm !== true) return needConfirm(`delete schedule ${schedule} in environment ${environment_id}.`);
+      return run(api, 'DELETE', `/cloud/containers/${environment_id}/schedules/${schedule}`, { body: { confirm: true } });
+    });
   reg('set_dns_record', 'Create or replace a DNS record set', 'Create or replace one record set (name + type) in a Gyro DNS zone. Replaces all values of that name + type.',
     { dns_id: id('Gyro DNS service id'), zone: z.string().min(1).max(253), name: z.string().min(1).max(253).describe('"@" = apex, "www", "*.app"'), type: z.enum(['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'SRV', 'CAA', 'ALIAS', 'NS', 'PTR']),
       records: z.array(z.string().min(1).max(4000)).min(1).max(100), ttl: z.number().int().min(60).max(86400).optional(), confirm: CONFIRM }, WRITE,

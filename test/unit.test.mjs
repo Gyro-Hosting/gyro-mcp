@@ -106,3 +106,29 @@ test('container log tools: env-wide query, where joined, writes need confirm (GY
   assert.equal(calls[2][0], 'PUT');
   assert.deepEqual(JSON.parse(calls[2][2]), { days: 30, gb: 10, confirm: true });
 });
+
+test('container schedule tools: registered, writes need confirm, headers hidden in the question (GYR-12, R2 2026-11-15)', async () => {
+  const { createGyroServer } = await import('../src/server.js');
+  const calls = [];
+  const fetchImpl = async (u, o) => { calls.push([o.method, String(u), o.body]); return new Response('{"data":{"schedule":{"id":"stoj02crbr9i"}}}', { status: 200 }); };
+  const t = createGyroServer({ token: 'wck_test', apiUrl: 'https://api.example/api/v1/client', fetchImpl })._registeredTools;
+  const all = ['list_container_schedules', 'get_container_schedule', 'preview_container_schedule', 'create_container_schedule', 'update_container_schedule', 'pause_container_schedule',
+    'resume_container_schedule', 'run_container_schedule_now', 'delete_container_schedule'];
+  for (const n of all) assert.ok(t[n], n);
+  for (const n of all.slice(0, 3)) assert.equal(t[n].annotations.readOnlyHint, true, n);
+  assert.equal(t.delete_container_schedule.annotations.destructiveHint, true);
+  const q = await t.update_container_schedule.handler({ environment_id: 17000, schedule: 'ping', headers: { Authorization: 'Bearer s3cr3t' } }, {});
+  assert.match(q.content[0].text, /Not done/);
+  assert.doesNotMatch(q.content[0].text, /s3cr3t/);
+  assert.equal(calls.length, 0);
+  await t.create_container_schedule.handler({ environment_id: 17000, name: 'nightly-report', cron: '0 3 * * *', service: 'api', command: ['npm', 'run', 'report'], confirm: true }, {});
+  assert.equal(calls[0][0], 'POST');
+  assert.equal(calls[0][1], 'https://api.example/api/v1/client/cloud/containers/17000/schedules');
+  assert.deepEqual(JSON.parse(calls[0][2]), { name: 'nightly-report', cron: '0 3 * * *', service: 'api', command: ['npm', 'run', 'report'] });
+  await t.run_container_schedule_now.handler({ environment_id: 17000, schedule: 'nightly-report', confirm: true }, {});
+  assert.equal(calls[1][1], 'https://api.example/api/v1/client/cloud/containers/17000/schedules/nightly-report/run');
+  await t.preview_container_schedule.handler({ environment_id: 17000, cron: '*/15 * * * *', timezone: 'UTC' }, {});
+  assert.equal(calls[2][0], 'POST');
+  await t.delete_container_schedule.handler({ environment_id: 17000, schedule: 'nightly-report', confirm: true }, {});
+  assert.equal(calls[3][0], 'DELETE');
+});
