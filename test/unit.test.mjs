@@ -58,3 +58,23 @@ test('VPC tools: registered, destructive marked, writes need confirm (R2 2026-11
   await t.create_vpc.handler({ name: 'x', cidr: '10.10.0.0/16', subnet_cidr: '10.10.1.0/24', confirm: true }, {});
   assert.equal(JSON.parse(calls[2][2]).subnet.cidr, '10.10.1.0/24');
 });
+
+test('container job tools: registered, run needs confirm, command list kept (GYR-17, R2 2026-11-15)', async () => {
+  const { createGyroServer } = await import('../src/server.js');
+  const calls = [];
+  const fetchImpl = async (u, o) => { calls.push([o.method, String(u), o.body, o.headers]); return new Response('{"data":{"job":{"id":"jabc123456789"}}}', { status: 202 }); };
+  const t = createGyroServer({ token: 'wck_test', apiUrl: 'https://api.example/api/v1/client', fetchImpl })._registeredTools;
+  for (const n of ['list_container_jobs', 'get_container_job', 'run_container_job', 'stop_container_job']) assert.ok(t[n], n);
+  for (const n of ['list_container_jobs', 'get_container_job']) assert.equal(t[n].annotations.readOnlyHint, true, n);
+  const r = await t.run_container_job.handler({ environment_id: 17000, service: 'api', command: ['npm', 'run', 'migrate'] }, {});
+  assert.match(r.content[0].text, /Not done/);
+  assert.equal(calls.length, 0);
+  await t.run_container_job.handler({ environment_id: 17000, service: 'api', command: ['sh', '-c', 'test 1 -lt 2 && cat < a > b'], confirm: true }, {});
+  assert.equal(calls[0][0], 'POST');
+  assert.equal(calls[0][1], 'https://api.example/api/v1/client/cloud/containers/17000/services/api/run');
+  assert.deepEqual(JSON.parse(calls[0][2]).command, ['sh', '-c', 'test 1 -lt 2 && cat < a > b']);
+  await t.get_container_job.handler({ environment_id: 17000, job_id: 'jabc123456789' }, {});
+  assert.equal(calls[1][1], 'https://api.example/api/v1/client/cloud/containers/17000/jobs/jabc123456789/logs?tail=200');
+  await t.stop_container_job.handler({ environment_id: 17000, job_id: 'jabc123456789', confirm: true }, {});
+  assert.equal(calls[2][0], 'DELETE');
+});

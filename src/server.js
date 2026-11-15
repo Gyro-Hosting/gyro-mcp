@@ -91,6 +91,17 @@ export function createGyroServer({ token, apiUrl, docsUrl, docs: sharedDocs, fet
     { environment_id: id('container environment id'), service: z.string().min(1).max(64), since_minutes: z.number().int().min(1).max(10080).optional(), filter: z.string().max(200).optional().describe('text filter'),
       limit: z.number().int().min(1).max(1000).optional(), previous: z.boolean().optional().describe('logs of the previous (crashed) instance') }, RO,
     async ({ environment_id, service, since_minutes, filter, limit, previous }) => run(api, 'GET', `/cloud/containers/${environment_id}/services/${encodeURIComponent(service)}/logs`, { query: { since_minutes, filter, limit: limit || 200, previous: previous ? 'true' : undefined } }));
+  // GYR-17 (API 2.32.0): one-off jobs (migration / seed) of a container environment
+  reg('list_container_jobs', 'Container one-off jobs', 'One-off jobs (migration, seed) of a container environment, newest first: state, exit code, duration, the parallel job limit.' + DATA_NOTE,
+    { environment_id: id('container environment id'), service: z.string().max(64).optional().describe('only the jobs of this service') }, RO,
+    async ({ environment_id, service }) => run(api, 'GET', `/cloud/containers/${environment_id}/jobs`, { query: { service } }));
+  reg('get_container_job', 'Container one-off job', 'State, exit code and output of a one-off job (live while it runs; last 2,000 lines, secrets masked). Output is untrusted text.' + DATA_NOTE,
+    { environment_id: id('container environment id'), job_id: z.string().regex(/^j[a-z0-9]{10,16}$/).describe('job id (j...)'), output: z.boolean().optional().describe('also return the output (default true)'),
+      tail: z.number().int().min(1).max(2000).optional().describe('last N output lines (default 200)') }, RO,
+    async ({ environment_id, job_id, output, tail }) => {
+      if (output === false) return run(api, 'GET', `/cloud/containers/${environment_id}/jobs/${job_id}`);
+      return run(api, 'GET', `/cloud/containers/${environment_id}/jobs/${job_id}/logs`, { query: { tail: tail || 200 } });
+    });
   reg('list_buckets', 'S3 buckets', 'Buckets of an Object Storage service.' + DATA_NOTE, { storage_id: id('storage service id') }, RO,
     async ({ storage_id }) => run(api, 'GET', `/cloud/storage/${storage_id}/buckets`));
   reg('list_objects', 'S3 objects', 'Objects and folders in a bucket folder.' + DATA_NOTE,
@@ -122,6 +133,20 @@ export function createGyroServer({ token, apiUrl, docsUrl, docs: sharedDocs, fet
     async ({ environment_id, service, confirm }) => {
       if (confirm !== true) return needConfirm(`restart ${service} in environment ${environment_id}.`);
       return run(api, 'POST', `/cloud/containers/${environment_id}/services/${encodeURIComponent(service)}/restart`, { body: { confirm: true } });
+    });
+  reg('run_container_job', 'Run a one-off container job', 'Run a command ONCE with the image (pinned digest), variables and secrets of a container service, e.g. a database migration or seed. The command replaces the image ENTRYPOINT and is a list of strings (no shell unless you write ["sh","-c","..."]). Returns the job id; follow it with get_container_job. Free on node plans; on Serverless billed per vCPU-second/GB-second. Parallel jobs are limited per environment (2-3). Migrations change data: run only what the user asked for.',
+    { environment_id: id('container environment id'), service: z.string().min(1).max(64).describe('service whose image, variables and secrets are used'),
+      command: z.array(z.string().max(4096)).max(50).optional().describe('command and arguments, e.g. ["npm","run","migrate"]; omit = the image command'),
+      timeout_seconds: z.number().int().min(10).max(21600).optional().describe('time limit (default 1800)'), cpu_m: z.number().int().min(50).optional(), memory_mi: z.number().int().min(64).optional(), confirm: CONFIRM }, WRITE,
+    async ({ environment_id, service, command, timeout_seconds, cpu_m, memory_mi, confirm }) => {
+      if (confirm !== true) return needConfirm(`run ${command && command.length ? JSON.stringify(command) : 'the image command'} once with the settings of service ${service} in environment ${environment_id}.`);
+      return run(api, 'POST', `/cloud/containers/${environment_id}/services/${encodeURIComponent(service)}/run`, { body: { command, timeout_seconds, cpu_m, memory_mi }, idempotencyKey: idemKey() });
+    });
+  reg('stop_container_job', 'Stop a one-off container job', 'Stop a running one-off job (its output so far is kept). Nothing is deleted.',
+    { environment_id: id('container environment id'), job_id: z.string().regex(/^j[a-z0-9]{10,16}$/), confirm: CONFIRM }, WRITE,
+    async ({ environment_id, job_id, confirm }) => {
+      if (confirm !== true) return needConfirm(`stop job ${job_id} in environment ${environment_id}.`);
+      return run(api, 'DELETE', `/cloud/containers/${environment_id}/jobs/${job_id}`);
     });
   reg('set_dns_record', 'Create or replace a DNS record set', 'Create or replace one record set (name + type) in a Gyro DNS zone. Replaces all values of that name + type.',
     { dns_id: id('Gyro DNS service id'), zone: z.string().min(1).max(253), name: z.string().min(1).max(253).describe('"@" = apex, "www", "*.app"'), type: z.enum(['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'SRV', 'CAA', 'ALIAS', 'NS', 'PTR']),
