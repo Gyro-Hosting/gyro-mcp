@@ -78,3 +78,28 @@ test('container job tools: registered, run needs confirm, command list kept (GYR
   await t.stop_container_job.handler({ environment_id: 17000, job_id: 'jabc123456789', confirm: true }, {});
   assert.equal(calls[2][0], 'DELETE');
 });
+
+test('container log tools: env-wide query, where joined, writes need confirm (GYR-19, R2 2026-11-15)', async () => {
+  const { createGyroServer } = await import('../src/server.js');
+  const calls = [];
+  const fetchImpl = async (u, o) => { calls.push([o.method, String(u), o.body]); return new Response('{"data":{"lines":[]}}', { status: 200 }); };
+  const t = createGyroServer({ token: 'wck_test', apiUrl: 'https://api.example/api/v1/client', fetchImpl })._registeredTools;
+  for (const n of ['get_container_logs', 'get_container_log_stats', 'get_container_log_usage', 'list_container_log_rules', 'test_container_log_rule', 'set_container_log_rules', 'set_container_log_package']) assert.ok(t[n], n);
+  for (const n of ['get_container_logs', 'get_container_log_stats', 'get_container_log_usage', 'list_container_log_rules']) assert.equal(t[n].annotations.readOnlyHint, true, n);
+  assert.equal(t.set_container_log_rules.annotations.destructiveHint, true);
+  await t.get_container_logs.handler({ environment_id: 17000, level: 'error', where: ['status>=500', 'path~/api'], since_minutes: 120 }, {});
+  const u = new URL(calls[0][1]);
+  assert.equal(u.pathname, '/api/v1/client/cloud/containers/17000/logs');
+  assert.equal(u.searchParams.get('where'), 'status>=500;path~/api');
+  assert.equal(u.searchParams.get('level'), 'error');
+  await t.get_container_logs.handler({ environment_id: 17000, service: 'api', previous: true }, {});
+  assert.match(calls[1][1], /services\/api\/logs\?.*previous=true/);
+  let r = await t.set_container_log_package.handler({ environment_id: 17000, days: 30, gb: 10 }, {});
+  assert.match(r.content[0].text, /Not done/);
+  r = await t.set_container_log_rules.handler({ environment_id: 17000, rules: [] }, {});
+  assert.match(r.content[0].text, /Not done/);
+  assert.equal(calls.length, 2);
+  await t.set_container_log_package.handler({ environment_id: 17000, days: 30, gb: 10, confirm: true }, {});
+  assert.equal(calls[2][0], 'PUT');
+  assert.deepEqual(JSON.parse(calls[2][2]), { days: 30, gb: 10, confirm: true });
+});
