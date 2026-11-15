@@ -293,11 +293,19 @@ export function createGyroServer({ token, apiUrl, docsUrl, docs: sharedDocs, fet
       if (confirm !== true) return needConfirm(`VPC ${vpc_id} gateway: ${JSON.stringify({ enabled, nat, inter_subnet, allow_no_egress })}${enabled ? ' (billed hourly while on, 4.99 EUR/month cap)' : ''}.`);
       return run(api, 'PUT', `/cloud/vpcs/${vpc_id}/gateway`, { body: { enabled, nat, inter_subnet, allow_no_egress } });
     });
-  reg('add_port_forward', 'Add a port forward', 'Forward gateway-public-IP:public_port to a private server IP:port (gateway must be on; up to 20 per VPC).',
-    { vpc_id: VPCID, protocol: z.enum(['tcp', 'udp']), public_port: z.number().int().min(1).max(65535), target_ip: z.string().min(7).max(15), target_port: z.number().int().min(1).max(65535), confirm: CONFIRM }, WRITE,
-    async ({ vpc_id, protocol, public_port, target_ip, target_port, confirm }) => {
-      if (confirm !== true) return needConfirm(`forward ${protocol}/${public_port} on the gateway of VPC ${vpc_id} to ${target_ip}:${target_port} (this exposes that port to the internet).`);
-      return run(api, 'POST', `/cloud/vpcs/${vpc_id}/port-forwards`, { body: { protocol, public_port, target_ip, target_port } });
+  const SOURCES = z.array(z.string().min(7).max(18)).max(20).describe('allowed source public IPv4 networks, e.g. ["203.0.113.10/32","198.51.100.0/24"] (a single IP is /32); empty = everyone');
+  reg('add_port_forward', 'Add a port forward', 'Forward gateway-public-IP:public_port to a private server IP:port (gateway must be on; up to 20 per VPC). source_cidrs limits who may use it (recommended for SSH/RDP/databases); left out = everyone.',
+    { vpc_id: VPCID, protocol: z.enum(['tcp', 'udp']), public_port: z.number().int().min(1).max(65535), target_ip: z.string().min(7).max(15), target_port: z.number().int().min(1).max(65535), source_cidrs: SOURCES.optional(), confirm: CONFIRM }, WRITE,
+    async ({ vpc_id, protocol, public_port, target_ip, target_port, source_cidrs, confirm }) => {
+      const who = source_cidrs && source_cidrs.length ? ` from ${source_cidrs.join(', ')} only` : ' (this exposes that port to the whole internet)';
+      if (confirm !== true) return needConfirm(`forward ${protocol}/${public_port} on the gateway of VPC ${vpc_id} to ${target_ip}:${target_port}${who}.`);
+      return run(api, 'POST', `/cloud/vpcs/${vpc_id}/port-forwards`, { body: { protocol, public_port, target_ip, target_port, source_cidrs } });
+    });
+  reg('vpc_port_forward_update', 'Change who may use a port forward', 'Replace the source allow list (source_cidrs) of a VPC gateway port forward: only these public IPv4 networks may connect. An empty list opens it to everyone.',
+    { vpc_id: VPCID, port_forward_id: z.string().min(3).max(40).regex(/^[a-z0-9-]+$/), source_cidrs: SOURCES, confirm: CONFIRM }, WRITE,
+    async ({ vpc_id, port_forward_id, source_cidrs, confirm }) => {
+      if (confirm !== true) return needConfirm(`port forward ${port_forward_id} of VPC ${vpc_id}: allow ${source_cidrs.length ? source_cidrs.join(', ') + ' only' : 'EVERYONE (open to the internet)'}.`);
+      return run(api, 'PATCH', `/cloud/vpcs/${vpc_id}/port-forwards/${port_forward_id}`, { body: { source_cidrs } });
     });
   reg('server_public_ip_on', 'Turn a server public IP back on', 'Reconnect the public IPv4 of a Gyro Cloud Istanbul server (the same IP comes back).',
     { server_id: id('server id'), confirm: CONFIRM }, WRITE,
@@ -334,6 +342,32 @@ export function createGyroServer({ token, apiUrl, docsUrl, docs: sharedDocs, fet
     async ({ vpc_id, confirm }) => {
       if (confirm !== true) return needConfirm(`DELETE VPC ${vpc_id} and its subnets. This cannot be undone.`);
       return run(api, 'DELETE', `/cloud/vpcs/${vpc_id}`, { query: { confirm: 'true' }, body: { confirm: true } });
+    });
+
+  // ---------------------------------------------------------------- container environment <-> VPC (API 2.34.0, VPC V2) — R2 2026-11-15
+  const EXPOSE = z.array(z.object({ service: z.string().min(1).max(40).regex(/^[a-z][a-z0-9-]*$/), port: z.number().int().min(1).max(65535) })).max(20)
+    .describe('services published at the VPC endpoint, e.g. [{"service":"api","port":8080}]; ports 22, 2200, 6443, 9100, 9750, 10250-10256, 30000-32767, 51820-51821 are reserved; each port once');
+  const CVNOTE = ' A node container environment (Mini, Small, Starter, Standard, Pro) joins one subnet (/26 or larger) of a VPC in tr-ist-1 and gets a fixed /28 "VPC source range": its containers reach the VPC servers from it (it does not change when nodes change). The first address is the "VPC endpoint": VPC servers reach the published services at endpoint_ip:port (never from the internet). Free. Serverless: not yet.';
+  reg('container_vpc_get', 'Container environment VPC attachment', 'Show whether a container environment is in a VPC: state, source_range, endpoint_ip, node IPs and published services.' + CVNOTE + DATA_NOTE,
+    { environment_id: id('container environment id') }, RO,
+    async ({ environment_id }) => run(api, 'GET', `/cloud/containers/${environment_id}/vpc`));
+  reg('container_vpc_attach', 'Attach a container environment to a VPC', 'Attach a node container environment to a VPC subnet (state attaching, ready in about a minute; poll container_vpc_get).' + CVNOTE,
+    { environment_id: id('container environment id'), vpc_id: VPCID, subnet_id: SUBID, expose: EXPOSE.optional(), confirm: CONFIRM }, WRITE,
+    async ({ environment_id, vpc_id, subnet_id, expose, confirm }) => {
+      if (confirm !== true) return needConfirm(`attach container environment ${environment_id} to subnet ${subnet_id} of VPC ${vpc_id}${expose && expose.length ? ', publishing ' + expose.map((e) => e.service + ':' + e.port).join(', ') : ''}.`);
+      return run(api, 'PUT', `/cloud/containers/${environment_id}/vpc`, { body: { vpc_id, subnet_id, expose } });
+    });
+  reg('container_vpc_expose', 'Change published services at the VPC endpoint', 'Replace the list of services a container environment publishes at its VPC endpoint (empty list = none). The source range and endpoint stay the same.' + CVNOTE,
+    { environment_id: id('container environment id'), expose: EXPOSE, confirm: CONFIRM }, WRITE,
+    async ({ environment_id, expose, confirm }) => {
+      if (confirm !== true) return needConfirm(`environment ${environment_id}: publish ${expose.length ? expose.map((e) => e.service + ':' + e.port).join(', ') : 'nothing'} at the VPC endpoint.`);
+      return run(api, 'PATCH', `/cloud/containers/${environment_id}/vpc`, { body: { expose } });
+    });
+  reg('container_vpc_detach', 'Detach a container environment from its VPC (destructive)', 'Remove the VPC attachment: VPC servers lose access to the published services, the containers lose access to the VPC and the /28 source range is released (a new attachment may get a different range).',
+    { environment_id: id('container environment id'), confirm: CONFIRM }, DESTRUCTIVE,
+    async ({ environment_id, confirm }) => {
+      if (confirm !== true) return needConfirm(`DETACH container environment ${environment_id} from its VPC.`);
+      return run(api, 'DELETE', `/cloud/containers/${environment_id}/vpc`, { body: { confirm: true } });
     });
 
   return s;

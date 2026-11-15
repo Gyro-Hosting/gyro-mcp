@@ -42,8 +42,9 @@ test('VPC tools: registered, destructive marked, writes need confirm (R2 2026-11
   const fetchImpl = async (u, o) => { calls.push([o.method, String(u), o.body]); return new Response('{"data":{"ok":1}}', { status: 200 }); };
   const t = createGyroServer({ token: 'wck_test', apiUrl: 'https://api.example/api/v1/client', fetchImpl })._registeredTools;
   for (const n of ['list_vpcs', 'get_vpc', 'list_server_nics', 'create_vpc', 'rename_vpc', 'create_subnet', 'attach_server_nic', 'set_vpc_gateway', 'add_port_forward',
-    'server_public_ip_on', 'server_public_ip_off', 'detach_server_nic', 'remove_port_forward', 'delete_subnet', 'delete_vpc']) assert.ok(t[n], n);
-  for (const n of ['delete_vpc', 'delete_subnet', 'detach_server_nic', 'remove_port_forward', 'server_public_ip_off']) assert.equal(t[n].annotations.destructiveHint, true, n);
+    'server_public_ip_on', 'server_public_ip_off', 'detach_server_nic', 'remove_port_forward', 'delete_subnet', 'delete_vpc',
+    'vpc_port_forward_update', 'container_vpc_get', 'container_vpc_attach', 'container_vpc_expose', 'container_vpc_detach']) assert.ok(t[n], n);
+  for (const n of ['delete_vpc', 'delete_subnet', 'detach_server_nic', 'remove_port_forward', 'server_public_ip_off', 'container_vpc_detach']) assert.equal(t[n].annotations.destructiveHint, true, n);
   for (const n of ['list_vpcs', 'get_vpc', 'list_server_nics']) assert.equal(t[n].annotations.readOnlyHint, true, n);
   const r = await t.delete_vpc.handler({ vpc_id: 'ab12cd34' }, {});
   assert.match(r.content[0].text, /Not done/);
