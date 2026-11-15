@@ -448,15 +448,24 @@ export function createGyroServer({ token, apiUrl, docsUrl, docs: sharedDocs, fet
   // ---------------------------------------------------------------- container environment <-> VPC (API 2.34.0, VPC V2) — R2 2026-11-15
   const EXPOSE = z.array(z.object({ service: z.string().min(1).max(40).regex(/^[a-z][a-z0-9-]*$/), port: z.number().int().min(1).max(65535) })).max(20)
     .describe('services published at the VPC endpoint, e.g. [{"service":"api","port":8080}]; ports 22, 2200, 6443, 9100, 9750, 10250-10256, 30000-32767, 51820-51821 are reserved; each port once');
-  const CVNOTE = ' A node container environment (Mini, Small, Starter, Standard, Pro) joins one subnet (/26 or larger) of a VPC in tr-ist-1 and gets a fixed /28 "VPC source range": its containers reach the VPC servers from it (it does not change when nodes change). The first address is the "VPC endpoint": VPC servers reach the published services at endpoint_ip:port (never from the internet). Free. Serverless: not yet.';
+  const CVNOTE = ' A container environment joins one subnet (/26 or larger) of a VPC in tr-ist-1 and gets a fixed /28 "VPC source range": its containers reach the VPC servers from it (it does not change when nodes change). The first address is the "VPC endpoint": VPC servers reach the published services at endpoint_ip:port (never from the internet). Price: free for node environments (Mini, Small, Starter, Standard, Pro); a serverless environment runs a dedicated connector, so its connection costs 2.99 EUR/month, billed hourly from the prepaid balance while attached (at least 1 hour per attachment; detaching stops it) - container_vpc_get shows it as pricing.';
   reg('container_vpc_get', 'Container environment VPC attachment', 'Show whether a container environment is in a VPC: state, source_range, endpoint_ip, node IPs and published services.' + CVNOTE + DATA_NOTE,
     { environment_id: id('container environment id') }, RO,
     async ({ environment_id }) => run(api, 'GET', `/cloud/containers/${environment_id}/vpc`));
-  reg('container_vpc_attach', 'Attach a container environment to a VPC', 'Attach a node container environment to a VPC subnet (state attaching, ready in about a minute; poll container_vpc_get).' + CVNOTE,
+  reg('container_vpc_attach', 'Attach a container environment to a VPC', 'Attach a container environment to a VPC subnet (state attaching, ready in about a minute, serverless about 3 minutes; poll container_vpc_get). For a serverless environment tell the user the monthly price first (the unconfirmed call returns it).' + CVNOTE,
     { environment_id: id('container environment id'), vpc_id: VPCID, subnet_id: SUBID, expose: EXPOSE.optional(), confirm: CONFIRM }, WRITE,
     async ({ environment_id, vpc_id, subnet_id, expose, confirm }) => {
-      if (confirm !== true) return needConfirm(`attach container environment ${environment_id} to subnet ${subnet_id} of VPC ${vpc_id}${expose && expose.length ? ', publishing ' + expose.map((e) => e.service + ':' + e.port).join(', ') : ''}.`);
-      return run(api, 'PUT', `/cloud/containers/${environment_id}/vpc`, { body: { vpc_id, subnet_id, expose } });
+      if (confirm !== true) {
+        // serverless environments are charged: put the price into the question (API 2.38.0 "pricing")
+        let price = '';
+        try {
+          const g = await api.call('GET', `/cloud/containers/${environment_id}/vpc`);
+          const p = g.ok && g.json && (g.json.data || g.json).pricing;
+          if (p && p.charged) price = ` CHARGED: this is a serverless environment, the VPC connection costs ${p.monthly_text || (p.monthly_eur + ' EUR')} per month, billed hourly (${p.hourly_text || p.hourly_eur + ' EUR'}) from the prepaid balance while attached, at least ${p.minimum_hours || 1} hour per attachment.`;
+        } catch (e) { /* the API asks again */ }
+        return needConfirm(`attach container environment ${environment_id} to subnet ${subnet_id} of VPC ${vpc_id}${expose && expose.length ? ', publishing ' + expose.map((e) => e.service + ':' + e.port).join(', ') : ''}.${price}`);
+      }
+      return run(api, 'PUT', `/cloud/containers/${environment_id}/vpc`, { body: { vpc_id, subnet_id, expose, confirm: true } });
     });
   reg('container_vpc_expose', 'Change published services at the VPC endpoint', 'Replace the list of services a container environment publishes at its VPC endpoint (empty list = none). The source range and endpoint stay the same.' + CVNOTE,
     { environment_id: id('container environment id'), expose: EXPOSE, confirm: CONFIRM }, WRITE,

@@ -160,3 +160,22 @@ test('bucket event tools: registered, writes need confirm, secret shown on creat
   assert.equal(calls[3][0], 'DELETE');
   assert.equal(calls[3][1], 'https://api.example/api/v1/client/cloud/storage/17000/events/7');
 });
+
+test('container_vpc_attach: serverless price in the question, confirm sent (API 2.38.0, R2 2026-11-15)', async () => {
+  const { createGyroServer } = await import('../src/server.js');
+  const calls = [];
+  const fetchImpl = async (u, o) => {
+    calls.push([o.method, String(u), o.body]);
+    if (o.method === 'GET') return new Response(JSON.stringify({ data: { attached: false, mode: 'serverless', pricing: { charged: true, monthly_eur: 2.99, monthly_text: '166,45 TL (2,99 €)', hourly_text: '0,2477 TL (0,0044 €)', minimum_hours: 1 } } }), { status: 200 });
+    return new Response('{"data":{"status":"successful","vpc":{"attached":true,"state":"attaching"}}}', { status: 200 });
+  };
+  const t = createGyroServer({ token: 'wck_test', apiUrl: 'https://api.example/api/v1/client', fetchImpl })._registeredTools;
+  const r = await t.container_vpc_attach.handler({ environment_id: 77, vpc_id: 'ab12cd34', subnet_id: 'ef56gh78' }, {});
+  assert.match(r.content[0].text, /Not done/);
+  assert.match(r.content[0].text, /CHARGED.*2,99 €/);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'GET');
+  await t.container_vpc_attach.handler({ environment_id: 77, vpc_id: 'ab12cd34', subnet_id: 'ef56gh78', confirm: true }, {});
+  assert.equal(calls[1][0], 'PUT');
+  assert.equal(JSON.parse(calls[1][2]).confirm, true);
+});
