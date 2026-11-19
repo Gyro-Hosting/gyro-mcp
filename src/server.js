@@ -362,6 +362,38 @@ export function createGyroServer({ token, apiUrl, docsUrl, docs: sharedDocs, fet
       return run(api, a.method, a.path, { query: a.query, body: a.body, idempotencyKey: key }, !!a.reveal_secrets);
     });
 
+  // ---------------------------------------------------------------- saved cards + automatic balance top-up (API 2.41.0, VakıfBank TTS) — R2 2026-11-19
+  // Card numbers never pass through the API or this server: a card is added in the browser with 3-D Secure (add_url).
+  reg('list_saved_cards', 'Saved cards', 'Saved payment cards of the account (masked: brand, last 4, expiry, default, auto_pay order, status) and add_url, the client-area page where a new card is added with 3-D Secure. Card numbers are never available.' + DATA_NOTE, {}, RO,
+    async () => run(api, 'GET', '/cloud/account/cards'));
+  reg('update_saved_card', 'Use a saved card for auto-payment / make it default', 'auto_pay=true adds the card to the end of the auto-payment chain (renewal invoices are paid from the balance first, then from these cards in order); false removes it. default=true makes it the default card.',
+    { card_id: id('saved card id from list_saved_cards'), auto_pay: z.boolean().optional(), default: z.literal(true).optional(), confirm: CONFIRM }, WRITE,
+    async ({ card_id, auto_pay, default: def, confirm }) => {
+      if (auto_pay === undefined && def === undefined) return asError('Give auto_pay and/or default=true.');
+      const what = [auto_pay === undefined ? '' : (auto_pay ? 'use card ' + card_id + ' for automatic payments (renewal invoices may be charged to it)' : 'stop using card ' + card_id + ' for automatic payments'), def ? 'make card ' + card_id + ' the default card' : ''].filter(Boolean).join(' and ');
+      if (confirm !== true) return needConfirm(what + '.');
+      const body = {}; if (auto_pay !== undefined) body.auto_pay = auto_pay; if (def) body.default = true;
+      return run(api, 'PATCH', `/cloud/account/cards/${card_id}`, { body });
+    });
+  reg('delete_saved_card', 'DELETE a saved card (destructive)', 'Remove a saved card from the account; it is also deleted at the bank. Automatic payments stop using it. Adding it again needs 3-D Secure in the browser.',
+    { card_id: id('saved card id from list_saved_cards'), confirm: CONFIRM }, DESTRUCTIVE,
+    async ({ card_id, confirm }) => {
+      if (confirm !== true) return needConfirm(`DELETE saved card ${card_id} (also at the bank).`);
+      return run(api, 'DELETE', `/cloud/account/cards/${card_id}`, { body: { confirm: true } });
+    });
+  reg('get_auto_topup', 'Automatic balance top-up', 'Automatic balance top-up setting: when the balance drops below threshold, amount (TRY, excl. VAT) is charged to the saved card and loaded as a balance top-up invoice incl. VAT (checked hourly), with the limits.' + DATA_NOTE, {}, RO,
+    async () => run(api, 'GET', '/cloud/account/auto-topup'));
+  reg('set_auto_topup', 'Turn automatic balance top-up on/off (charges the card)', 'enabled=true authorises charges to the saved card whenever the balance is below threshold (amount in TRY excl. VAT, at least 250, at most limits.max_single). card_id 0 = the auto-payment card. Omitted fields keep their value.',
+    { enabled: z.boolean(), threshold: z.number().min(0).optional(), amount: z.number().min(250).optional(), card_id: z.number().int().min(0).optional(), confirm: CONFIRM }, MONEY,
+    async ({ enabled, threshold, amount, card_id, confirm }) => {
+      if (confirm !== true) return needConfirm(enabled
+        ? `turn ON automatic top-up: when the balance is below ${threshold ?? 'the current threshold'} TRY, ${amount ?? 'the current amount'} TRY + VAT is charged to ${card_id ? 'card ' + card_id : 'the auto-payment card'} (repeats within the daily limits).`
+        : 'turn OFF automatic balance top-up.');
+      const body = { enabled }; if (enabled) body.consent = true;
+      if (threshold !== undefined) body.threshold = threshold; if (amount !== undefined) body.amount = amount; if (card_id !== undefined) body.card_id = card_id;
+      return run(api, 'PUT', '/cloud/account/auto-topup', { body });
+    });
+
   // ---------------------------------------------------------------- service add-ons + registry policy (#3462, R2 2026-11-15)
   reg('list_service_addons', 'Service add-ons (available and owned)', 'Add-ons that can be bought for a service (addon_id, option ids, prices; prepaid services: hourly price) and the add-ons it already holds (record id, status, billing, removable). E.g. the Network Firewall add-on that firewall rules need.' + DATA_NOTE,
     { service_id: id('service id') }, RO,

@@ -248,3 +248,34 @@ test('#3462 madde 10: snapshot schedule tools (API 2.40.0, R2 2026-11-15)', asyn
   await t.get_snapshot_schedule.handler({ server_id: 701 }, {});
   assert.equal(calls[1][0], 'GET');
 });
+
+test('saved cards + auto top-up tools: confirm, destructive, no card number field (API 2.41.0, R2 2026-11-19)', async () => {
+  const { createGyroServer } = await import('../src/server.js');
+  const calls = [];
+  const fetchImpl = async (u, o) => { calls.push([o.method, String(u), o.body]); return new Response('{"data":{"cards":[]}}', { status: 200 }); };
+  const t = createGyroServer({ token: 'wck_test', apiUrl: 'https://api.example/api/v1/client', fetchImpl })._registeredTools;
+  for (const n of ['list_saved_cards', 'update_saved_card', 'delete_saved_card', 'get_auto_topup', 'set_auto_topup']) assert.ok(t[n], n);
+  assert.equal(t.delete_saved_card.annotations.destructiveHint, true);
+  assert.equal(t.list_saved_cards.annotations.readOnlyHint, true);
+  for (const n of ['update_saved_card', 'delete_saved_card', 'set_auto_topup'])
+    assert.ok(!/pan|card_number|cvc|cvv/i.test(JSON.stringify(Object.keys(t[n].inputSchema?.shape || t[n].inputSchema || {}))), n);
+  let r = await t.delete_saved_card.handler({ card_id: 5 }, {});
+  assert.match(r.content[0].text, /Not done.*DELETE saved card 5/s);
+  r = await t.set_auto_topup.handler({ enabled: true, threshold: 250, amount: 500 }, {});
+  assert.match(r.content[0].text, /Not done.*500 TRY/s);
+  r = await t.update_saved_card.handler({ card_id: 5, auto_pay: true }, {});
+  assert.match(r.content[0].text, /Not done/);
+  assert.equal(calls.length, 0);
+  await t.list_saved_cards.handler({}, {});
+  assert.deepEqual([calls[0][0], /\/cloud\/account\/cards$/.test(calls[0][1])], ['GET', true]);
+  await t.update_saved_card.handler({ card_id: 5, auto_pay: false, confirm: true }, {});
+  assert.deepEqual([calls[1][0], JSON.parse(calls[1][2])], ['PATCH', { auto_pay: false }]);
+  await t.delete_saved_card.handler({ card_id: 5, confirm: true }, {});
+  assert.deepEqual([calls[2][0], /\/cloud\/account\/cards\/5$/.test(calls[2][1]), JSON.parse(calls[2][2])], ['DELETE', true, { confirm: true }]);
+  await t.set_auto_topup.handler({ enabled: true, threshold: 250, amount: 500, confirm: true }, {});
+  assert.deepEqual([calls[3][0], JSON.parse(calls[3][2])], ['PUT', { enabled: true, consent: true, threshold: 250, amount: 500 }]);
+  await t.set_auto_topup.handler({ enabled: false, confirm: true }, {});
+  assert.deepEqual(JSON.parse(calls[4][2]), { enabled: false });
+  await t.get_auto_topup.handler({}, {});
+  assert.equal(calls[5][0], 'GET');
+});
