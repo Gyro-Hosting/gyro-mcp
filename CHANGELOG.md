@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.13.0 (2026-11-20)
+Gyro Public API 2.43.1.
+- Protected Storage (versioning + object lock) tools: `get_object_lock_summary`, `scan_object_locks`, `list_object_versions`,
+  `get_bucket_object_lock`, `get_object_retention`, `get_object_legal_hold`, `get_noncurrent_expiration` (read);
+  `restore_object_version`, `undelete_object`, `set_bucket_default_retention`, `set_object_retention`, `set_object_legal_hold`,
+  `set_noncurrent_expiration` (confirm); `delete_object_version` (destructive, permanent). COMPLIANCE retention needs
+  `confirm: true` and `acknowledge: "COMPLIANCE"` (nobody can shorten or remove it). The legal hold tool says that any key with write
+  access can remove a legal hold (standard S3), so ransomware protection should rely on COMPLIANCE.
+
 ## 0.12.0 (2026-11-19)
 Gyro Public API 2.43.0.
 - `get_account_activity`: sign-ins and account events of the client area (API 2.42.0 `GET /activity`, needs `account_read`; sub-account keys are refused).

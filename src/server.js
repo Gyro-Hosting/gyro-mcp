@@ -315,6 +315,86 @@ export function createGyroServer({ token, apiUrl, docsUrl, docs: sharedDocs, fet
       return run(api, 'DELETE', `/cloud/storage/${storage_id}/buckets/${encodeURIComponent(bucket)}/alert`);
     });
 
+  // ---------------------------------------------------------------- Protected Storage: versions, object lock, legal hold (Gyro Public API 2.13.1+, R2 2026-11-20)
+  // On a standard Object Storage service these answer 409 feature_not_available. Bucket = the real S3 name (full_name, "<name>-<code>").
+  const OKEY = z.string().min(1).max(1024).describe('object key, e.g. "reports/2026-11.pdf"');
+  const VID = z.string().min(1).max(128).regex(/^[A-Za-z0-9._+=-]+$/);
+  const KB = (storage_id, bucket) => `/cloud/storage/${storage_id}/buckets/${encodeURIComponent(bucket)}`;
+  const ACK = z.literal('COMPLIANCE').optional().describe('Required (with confirm=true) for COMPLIANCE: nobody, Gyro included, can shorten or remove it; data stays billed until it expires, even after cancelling.');
+  const COMPLIANCE_Q = 'COMPLIANCE cannot be shortened, switched to GOVERNANCE or removed by anyone (Gyro included) until it expires; the data and its billing stay until then, even if the service is cancelled. Tell the user this exactly, get an explicit yes, then call again with confirm=true and acknowledge="COMPLIANCE".';
+  reg('get_object_lock_summary', 'Protected Storage lock summary', 'Object lock overview of a Protected Storage service: locked bucket rights / used, max retention, each bucket\'s default retention, and the last lock scan (COMPLIANCE / GOVERNANCE / legal hold version counts, latest end dates; these decide whether the service can be cancelled).' + DATA_NOTE,
+    { storage_id: id('Protected Storage service id') }, RO,
+    async ({ storage_id }) => run(api, 'GET', `/cloud/storage/${storage_id}/object-lock`));
+  reg('scan_object_locks', 'Rescan object locks', 'Count locked versions now (COMPLIANCE, GOVERNANCE, legal hold, latest end dates) instead of waiting for the periodic scan. Changes nothing.' + DATA_NOTE,
+    { storage_id: id('Protected Storage service id') }, RO,
+    async ({ storage_id }) => run(api, 'POST', `/cloud/storage/${storage_id}/object-lock/scan`, { body: {} }));
+  reg('list_object_versions', 'List object versions', 'All versions and delete markers in a Protected Storage bucket (optionally under a prefix), newest first per key, with lock mode, retain_until and legal_hold. Page with key_marker + version_id_marker from the previous answer.' + DATA_NOTE,
+    { storage_id: id('Protected Storage service id'), bucket: BKT, prefix: z.string().max(1024).optional(), key_marker: z.string().max(1024).optional(), version_id_marker: VID.optional() }, RO,
+    async ({ storage_id, bucket, prefix, key_marker, version_id_marker }) => run(api, 'GET', `${KB(storage_id, bucket)}/versions`, { query: { prefix, key_marker, version_id_marker } }));
+  reg('restore_object_version', 'Restore an old version', 'Make an old version the current one again (copies it as a new latest version; nothing is deleted, the newer versions stay).',
+    { storage_id: id('Protected Storage service id'), bucket: BKT, key: OKEY, version_id: VID, confirm: CONFIRM }, WRITE,
+    async ({ storage_id, bucket, key, version_id, confirm }) => {
+      if (confirm !== true) return needConfirm(`restore version ${version_id} of ${key} in bucket ${bucket} (storage ${storage_id}) as the current version.`);
+      return run(api, 'POST', `${KB(storage_id, bucket)}/versions/restore`, { body: { key, version_id } });
+    });
+  reg('undelete_object', 'Bring back a deleted object', 'Remove a delete marker so the object it hid becomes current again. version_id = the delete marker\'s version id (delete_marker=true in list_object_versions).',
+    { storage_id: id('Protected Storage service id'), bucket: BKT, key: OKEY, version_id: VID.describe('version id of the delete marker'), confirm: CONFIRM }, WRITE,
+    async ({ storage_id, bucket, key, version_id, confirm }) => {
+      if (confirm !== true) return needConfirm(`remove delete marker ${version_id} of ${key} in bucket ${bucket} (storage ${storage_id}) so the object is back.`);
+      return run(api, 'POST', `${KB(storage_id, bucket)}/versions/undelete`, { body: { key, version_id } });
+    });
+  reg('delete_object_version', 'Permanently delete a version', 'PERMANENTLY delete one version (cannot be restored). Versions under a lock or legal hold are refused.',
+    { storage_id: id('Protected Storage service id'), bucket: BKT, key: OKEY, version_id: VID, confirm: CONFIRM }, DESTRUCTIVE,
+    async ({ storage_id, bucket, key, version_id, confirm }) => {
+      if (confirm !== true) return needConfirm(`PERMANENTLY delete version ${version_id} of ${key} in bucket ${bucket} (storage ${storage_id}); it cannot be restored.`);
+      return run(api, 'DELETE', `${KB(storage_id, bucket)}/versions`, { body: { key, version_id, confirm: true } });
+    });
+  reg('get_bucket_object_lock', 'Bucket default retention', 'Object lock state of one bucket: whether it is a locked (WORM) bucket and its default retention (mode + days) applied to every new upload.' + DATA_NOTE,
+    { storage_id: id('Protected Storage service id'), bucket: BKT }, RO,
+    async ({ storage_id, bucket }) => run(api, 'GET', `${KB(storage_id, bucket)}/object-lock`));
+  reg('set_bucket_default_retention', 'Set bucket default retention', 'Default retention for NEW uploads of a locked bucket: GOVERNANCE or COMPLIANCE for 1-3650 days, or OFF (existing versions keep their own lock). Prefer GOVERNANCE first; COMPLIANCE is irreversible per version.',
+    { storage_id: id('Protected Storage service id'), bucket: BKT, mode: z.enum(['GOVERNANCE', 'COMPLIANCE', 'OFF']), days: z.number().int().min(1).max(3650).optional().describe('required unless mode=OFF'), confirm: CONFIRM, acknowledge: ACK }, WRITE,
+    async ({ storage_id, bucket, mode, days, confirm, acknowledge }) => {
+      if (mode !== 'OFF' && !days) return asError('days is required for GOVERNANCE / COMPLIANCE.');
+      if (confirm !== true || (mode === 'COMPLIANCE' && acknowledge !== 'COMPLIANCE'))
+        return needConfirm(`set the default retention of bucket ${bucket} (storage ${storage_id}) to ${mode}${mode === 'OFF' ? '' : ' ' + days + ' days'} for new uploads.` + (mode === 'COMPLIANCE' ? ' ' + COMPLIANCE_Q : ''));
+      const body = { mode, confirm: true };
+      if (mode !== 'OFF') body.days = days;
+      if (mode === 'COMPLIANCE') body.acknowledge = 'COMPLIANCE';
+      return run(api, 'PUT', `${KB(storage_id, bucket)}/object-lock`, { body });
+    });
+  reg('get_object_retention', 'Object version lock', 'Lock of one object version (default: the current version): mode, retain_until, whether it is still active, legal hold.' + DATA_NOTE,
+    { storage_id: id('Protected Storage service id'), bucket: BKT, key: OKEY, version_id: VID.optional() }, RO,
+    async ({ storage_id, bucket, key, version_id }) => run(api, 'GET', `${KB(storage_id, bucket)}/objects/retention`, { query: { key, version_id } }));
+  reg('set_object_retention', 'Lock or extend an object version', 'Lock one version (default: current) for N days from now in GOVERNANCE or COMPLIANCE. A lock can only be extended, never shortened; GOVERNANCE can be raised to COMPLIANCE, not the reverse.',
+    { storage_id: id('Protected Storage service id'), bucket: BKT, key: OKEY, version_id: VID.optional(), mode: z.enum(['GOVERNANCE', 'COMPLIANCE']), days: z.number().int().min(1).max(3650), confirm: CONFIRM, acknowledge: ACK }, WRITE,
+    async ({ storage_id, bucket, key, version_id, mode, days, confirm, acknowledge }) => {
+      if (confirm !== true || (mode === 'COMPLIANCE' && acknowledge !== 'COMPLIANCE'))
+        return needConfirm(`lock ${key}${version_id ? ' (version ' + version_id + ')' : ''} in bucket ${bucket} (storage ${storage_id}) in ${mode} for ${days} days; it cannot be shortened afterwards.` + (mode === 'COMPLIANCE' ? ' ' + COMPLIANCE_Q : ''));
+      const body = { key, version_id, mode, days, confirm: true };
+      if (mode === 'COMPLIANCE') body.acknowledge = 'COMPLIANCE';
+      return run(api, 'PUT', `${KB(storage_id, bucket)}/objects/retention`, { body });
+    });
+  reg('get_object_legal_hold', 'Object legal hold', 'Whether one object version (default: current) is on legal hold.' + DATA_NOTE,
+    { storage_id: id('Protected Storage service id'), bucket: BKT, key: OKEY, version_id: VID.optional() }, RO,
+    async ({ storage_id, bucket, key, version_id }) => run(api, 'GET', `${KB(storage_id, bucket)}/objects/legal-hold`, { query: { key, version_id } }));
+  reg('set_object_legal_hold', 'Put or remove a legal hold', 'Legal hold on one version (default: current): "on" keeps it from being deleted with no end date (independent of retention); "off" removes it. ' +
+    'Standard S3 behaviour: any key with write access to the bucket can remove a legal hold, so against ransomware rely on a COMPLIANCE retention, not on a legal hold alone. While a legal hold exists the service cannot be cancelled.',
+    { storage_id: id('Protected Storage service id'), bucket: BKT, key: OKEY, version_id: VID.optional(), status: z.enum(['on', 'off']), confirm: CONFIRM }, WRITE,
+    async ({ storage_id, bucket, key, version_id, status, confirm }) => {
+      if (confirm !== true) return needConfirm(`${status === 'on' ? 'put a legal hold on' : 'REMOVE the legal hold of'} ${key}${version_id ? ' (version ' + version_id + ')' : ''} in bucket ${bucket} (storage ${storage_id})${status === 'off' ? '; the version can then be deleted once no retention protects it' : ''}.`);
+      return run(api, 'PUT', `${KB(storage_id, bucket)}/objects/legal-hold`, { body: { key, version_id, status } });
+    });
+  reg('get_noncurrent_expiration', 'Old version clean-up rule', 'How many days old (noncurrent) versions of a Protected Storage bucket are kept before automatic deletion (default 30). Locked versions are never deleted before their lock ends.' + DATA_NOTE,
+    { storage_id: id('Protected Storage service id'), bucket: BKT }, RO,
+    async ({ storage_id, bucket }) => run(api, 'GET', `${KB(storage_id, bucket)}/lifecycle/noncurrent`));
+  reg('set_noncurrent_expiration', 'Set old version clean-up', 'Delete old (noncurrent) versions N days after they stop being current (0 = keep forever, which grows used space). Runs nightly; locked versions are skipped until their lock ends.',
+    { storage_id: id('Protected Storage service id'), bucket: BKT, days: z.number().int().min(0).max(3650), confirm: CONFIRM }, WRITE,
+    async ({ storage_id, bucket, days, confirm }) => {
+      if (confirm !== true) return needConfirm(`keep old versions of bucket ${bucket} (storage ${storage_id}) ${days === 0 ? 'forever' : 'for ' + days + ' days, then delete them'}.`);
+      return run(api, 'PUT', `${KB(storage_id, bucket)}/lifecycle/noncurrent`, { body: { days } });
+    });
+
   // ---------------------------------------------------------------- money (dry run first)
   const money = (tool, path, buildBody, describe) => async (args) => {
     const body = buildBody(args);

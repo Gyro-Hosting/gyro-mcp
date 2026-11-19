@@ -291,3 +291,38 @@ test('account activity tool: read-only, GET /activity with filters (R2 2026-11-1
   assert.equal(calls[0][0], 'GET');
   assert.equal(calls[0][1], 'https://api.example/api/v1/client/activity?type=login&from=2026-11-01&limit=5');
 });
+
+test('Protected Storage tools: versions, lock, legal hold; writes need confirm, COMPLIANCE needs acknowledge (R2 2026-11-20)', async () => {
+  const { createGyroServer } = await import('../src/server.js');
+  const calls = [];
+  const fetchImpl = async (u, o) => { calls.push([o.method, String(u), o.body]); return new Response('{"data":{"ok":true}}', { status: 200 }); };
+  const t = createGyroServer({ token: 'wck_test', apiUrl: 'https://api.example/api/v1/client', fetchImpl })._registeredTools;
+  const names = ['get_object_lock_summary', 'scan_object_locks', 'list_object_versions', 'restore_object_version', 'undelete_object', 'delete_object_version',
+    'get_bucket_object_lock', 'set_bucket_default_retention', 'get_object_retention', 'set_object_retention', 'get_object_legal_hold', 'set_object_legal_hold',
+    'get_noncurrent_expiration', 'set_noncurrent_expiration'];
+  for (const n of names) assert.ok(t[n], n);
+  assert.equal(t.list_object_versions.annotations.readOnlyHint, true);
+  assert.equal(t.delete_object_version.annotations.destructiveHint, true);
+  const B = 'https://api.example/api/v1/client/cloud/storage/17000/buckets/yedek-ab12';
+  for (const [n, a] of [['restore_object_version', { key: 'a.txt', version_id: 'v1' }], ['undelete_object', { key: 'a.txt', version_id: 'dm1' }], ['delete_object_version', { key: 'a.txt', version_id: 'v1' }],
+    ['set_object_legal_hold', { key: 'a.txt', status: 'off' }], ['set_noncurrent_expiration', { days: 7 }], ['set_bucket_default_retention', { mode: 'GOVERNANCE', days: 1 }]]) {
+    const r = await t[n].handler({ storage_id: 17000, bucket: 'yedek-ab12', ...a }, {});
+    assert.match(r.content[0].text, /Not done/, n);
+  }
+  let r = await t.set_object_retention.handler({ storage_id: 17000, bucket: 'yedek-ab12', key: 'a.txt', mode: 'COMPLIANCE', days: 1, confirm: true }, {});
+  assert.match(r.content[0].text, /acknowledge="COMPLIANCE"/);
+  assert.equal(calls.length, 0);
+  await t.list_object_versions.handler({ storage_id: 17000, bucket: 'yedek-ab12', prefix: 'arsiv/' }, {});
+  assert.equal(calls[0][0], 'GET'); assert.equal(calls[0][1], B + '/versions?prefix=arsiv%2F');
+  await t.set_object_retention.handler({ storage_id: 17000, bucket: 'yedek-ab12', key: 'a.txt', mode: 'COMPLIANCE', days: 1, confirm: true, acknowledge: 'COMPLIANCE' }, {});
+  assert.equal(calls[1][0], 'PUT'); assert.equal(calls[1][1], B + '/objects/retention');
+  assert.deepEqual(JSON.parse(calls[1][2]), { key: 'a.txt', mode: 'COMPLIANCE', days: 1, confirm: true, acknowledge: 'COMPLIANCE' });
+  await t.delete_object_version.handler({ storage_id: 17000, bucket: 'yedek-ab12', key: 'a.txt', version_id: 'v1', confirm: true }, {});
+  assert.equal(calls[2][0], 'DELETE'); assert.deepEqual(JSON.parse(calls[2][2]), { key: 'a.txt', version_id: 'v1', confirm: true });
+  await t.set_object_legal_hold.handler({ storage_id: 17000, bucket: 'yedek-ab12', key: 'a.txt', status: 'on', confirm: true }, {});
+  assert.equal(calls[3][1], B + '/objects/legal-hold'); assert.deepEqual(JSON.parse(calls[3][2]), { key: 'a.txt', status: 'on' });
+  await t.set_bucket_default_retention.handler({ storage_id: 17000, bucket: 'yedek-ab12', mode: 'OFF', confirm: true }, {});
+  assert.deepEqual(JSON.parse(calls[4][2]), { mode: 'OFF', confirm: true });
+  await t.get_object_lock_summary.handler({ storage_id: 17000 }, {});
+  assert.equal(calls[5][1], 'https://api.example/api/v1/client/cloud/storage/17000/object-lock');
+});
