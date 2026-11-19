@@ -161,6 +161,29 @@ test('bucket event tools: registered, writes need confirm, secret shown on creat
   assert.equal(calls[3][1], 'https://api.example/api/v1/client/cloud/storage/17000/events/7');
 });
 
+test('bucket alert tools: registered, writes need confirm (API 2.43.0, R2 2026-11-19)', async () => {
+  const { createGyroServer } = await import('../src/server.js');
+  const calls = [];
+  const fetchImpl = async (u, o) => { calls.push([o.method, String(u), o.body]); return new Response('{"data":{"item":{"bucket":"gyro-proje","enabled":true}}}', { status: 200 }); };
+  const t = createGyroServer({ token: 'wck_test', apiUrl: 'https://api.example/api/v1/client', fetchImpl })._registeredTools;
+  for (const n of ['list_bucket_alerts', 'set_bucket_alert', 'delete_bucket_alert']) assert.ok(t[n], n);
+  assert.equal(t.list_bucket_alerts.annotations.readOnlyHint, true);
+  let r = await t.set_bucket_alert.handler({ storage_id: 17000, bucket: 'gyro-proje', type: 'percent', value: 80 }, {});
+  assert.match(r.content[0].text, /Not done/);
+  r = await t.delete_bucket_alert.handler({ storage_id: 17000, bucket: 'gyro-proje' }, {});
+  assert.match(r.content[0].text, /Not done/);
+  assert.equal(calls.length, 0);
+  await t.set_bucket_alert.handler({ storage_id: 17000, bucket: 'gyro-proje', type: 'gb', value: 50, confirm: true }, {});
+  assert.equal(calls[0][0], 'PUT');
+  assert.equal(calls[0][1], 'https://api.example/api/v1/client/cloud/storage/17000/buckets/gyro-proje/alert');
+  assert.deepEqual(JSON.parse(calls[0][2]), { type: 'gb', value: 50 });
+  await t.list_bucket_alerts.handler({ storage_id: 17000 }, {});
+  assert.equal(calls[1][1], 'https://api.example/api/v1/client/cloud/storage/17000/alerts');
+  await t.delete_bucket_alert.handler({ storage_id: 17000, bucket: 'gyro-proje', confirm: true }, {});
+  assert.equal(calls[2][0], 'DELETE');
+  assert.equal(calls[2][1], 'https://api.example/api/v1/client/cloud/storage/17000/buckets/gyro-proje/alert');
+});
+
 test('container_vpc_attach: serverless price in the question, confirm sent (API 2.38.0, R2 2026-11-15)', async () => {
   const { createGyroServer } = await import('../src/server.js');
   const calls = [];

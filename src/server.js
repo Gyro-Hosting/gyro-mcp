@@ -291,6 +291,23 @@ export function createGyroServer({ token, apiUrl, docsUrl, docs: sharedDocs, fet
       if (confirm !== true) return needConfirm(`delete event webhook ${webhook_id} of storage ${storage_id}.`);
       return run(api, 'DELETE', `/cloud/storage/${storage_id}/events/${webhook_id}`, { body: { confirm: true } });
     });
+  // ---------------------------------------------------------------- S3 bucket fill alerts (Gyro Public API 2.43.0, R2 2026-11-19)
+  reg('list_bucket_alerts', 'S3 bucket fill alerts', 'Fill alert of every bucket of an Object / Protected Storage service: usage, share of the package, rule (percent of the package or GB), threshold, state off / armed / triggered, last e-mail.' + DATA_NOTE,
+    { storage_id: id('storage service id'), bucket: BKT.optional() }, RO,
+    async ({ storage_id, bucket }) => run(api, 'GET', bucket ? `/cloud/storage/${storage_id}/buckets/${encodeURIComponent(bucket)}/alert` : `/cloud/storage/${storage_id}/alerts`));
+  reg('set_bucket_alert', 'Set an S3 bucket fill alert', 'One e-mail when the bucket\'s usage reaches the threshold; it re-arms when usage drops below 95 % of the threshold, so the next crossing e-mails again. ' +
+    'type "percent" = share of the package size (1-100), "gb" = absolute size (1 - package size). Checked every 5 minutes. Replaces the bucket\'s previous rule.',
+    { storage_id: id('storage service id'), bucket: BKT, type: z.enum(['percent', 'gb']), value: z.number().int().min(1), confirm: CONFIRM }, WRITE,
+    async ({ storage_id, bucket, type, value, confirm }) => {
+      if (confirm !== true) return needConfirm(`set the fill alert of bucket ${bucket} (storage ${storage_id}) to ${value}${type === 'percent' ? ' % of the package' : ' GB'}.`);
+      return run(api, 'PUT', `/cloud/storage/${storage_id}/buckets/${encodeURIComponent(bucket)}/alert`, { body: { type, value } });
+    });
+  reg('delete_bucket_alert', 'Remove an S3 bucket fill alert', 'Remove the fill alert of a bucket (no more e-mails). No data is deleted.',
+    { storage_id: id('storage service id'), bucket: BKT, confirm: CONFIRM }, WRITE,
+    async ({ storage_id, bucket, confirm }) => {
+      if (confirm !== true) return needConfirm(`remove the fill alert of bucket ${bucket} (storage ${storage_id}).`);
+      return run(api, 'DELETE', `/cloud/storage/${storage_id}/buckets/${encodeURIComponent(bucket)}/alert`);
+    });
 
   // ---------------------------------------------------------------- money (dry run first)
   const money = (tool, path, buildBody, describe) => async (args) => {
