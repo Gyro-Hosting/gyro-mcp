@@ -68,6 +68,12 @@ export function createGyroServer({ token, apiUrl, docsUrl, docs: sharedDocs, fet
     });
 
   // ---------------------------------------------------------------- account: read
+  // API 2.42.0 (#1490): account activity of the client area (sign-ins, security / profile events); needs the account_read permission
+  reg('get_account_activity', 'Account activity (sign-ins, security events)', 'Sign-ins (IP, location, browser) and account events (password, two-factor, passkey, session, profile changes) of the account, newest first, as in the client area (Account > Activity). Needs the account_read permission on the key; sub-account keys are refused. type: login | action | all; from / to: YYYY-MM-DD or ISO 8601.' + DATA_NOTE,
+    { type: z.enum(['all', 'login', 'action']).optional(), from: z.string().max(40).optional().describe('from this day (YYYY-MM-DD) or time (ISO 8601), inclusive'),
+      to: z.string().max(40).optional().describe('until this day (YYYY-MM-DD) or time (ISO 8601), inclusive'), lang,
+      page: z.number().int().min(1).optional(), limit: z.number().int().min(1).max(100).optional() }, RO,
+    async ({ type, from, to, lang: l, page, limit }) => run(api, 'GET', '/activity', { query: { type, from, to, lang: l, page, limit: limit || 25 } }));
   reg('whoami', 'Who am I', 'Describe the API key in use: account, scopes, IP allow list.' + DATA_NOTE, {}, RO, async () => run(api, 'GET', '/whoami'));
   reg('list_services', 'List services', 'All services of the account (cloud servers, container environments, S3, DNS, mail, monitors, VDS, hosting…) with ids, products and status.' + DATA_NOTE,
     { product_line: z.string().max(40).optional().describe('filter, e.g. cloud, container, storage, dns, mail, monitor'), status: z.string().max(20).optional().describe('e.g. active, suspended'),

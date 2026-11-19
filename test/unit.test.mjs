@@ -225,3 +225,15 @@ test('#3462 madde 10: snapshot schedule tools (API 2.40.0, R2 2026-11-15)', asyn
   await t.get_snapshot_schedule.handler({ server_id: 701 }, {});
   assert.equal(calls[1][0], 'GET');
 });
+
+test('account activity tool: read-only, GET /activity with filters (R2 2026-11-19)', async () => {
+  const { createGyroServer } = await import('../src/server.js');
+  const calls = [];
+  const fetchImpl = async (u, o) => { calls.push([o.method, String(u)]); return new Response('{"data":[]}', { status: 200 }); };
+  const t = createGyroServer({ token: 'wck_test', apiUrl: 'https://api.example/api/v1/client', fetchImpl })._registeredTools;
+  assert.ok(t.get_account_activity);
+  assert.equal(t.get_account_activity.annotations.readOnlyHint, true);
+  await t.get_account_activity.handler({ type: 'login', from: '2026-11-01', limit: 5 }, {});
+  assert.equal(calls[0][0], 'GET');
+  assert.equal(calls[0][1], 'https://api.example/api/v1/client/activity?type=login&from=2026-11-01&limit=5');
+});
