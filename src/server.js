@@ -420,6 +420,42 @@ export function createGyroServer({ token, apiUrl, docsUrl, docs: sharedDocs, fet
     { plan: z.string().min(2).max(40).describe('e.g. standard-250gb, protected-1tb'), cycle: z.enum(['monthly', 'quarterly', 'semiannually', 'annually']).optional(), name: z.string().max(60).optional(), confirm: CONFIRM, idempotency_key: IDEM }, MONEY,
     money('create_storage', '/cloud/storage', (a) => ({ plan: a.plan, cycle: a.cycle || 'monthly', name: a.name })));
 
+  // ---------------------------------------------------------------- Backup Space (API 2.44.0, Gyro Yedekleme Alanı): SFTP space bound to one server of the account
+  const BSID = id('backup space (service) id');
+  reg('list_backup_space_plans', 'Backup space plans', 'Orderable Backup Space sizes (50gb, 100gb, 250gb, 500gb, 1tb; tr-ist-1, SFTP) with prices per cycle (fixed EUR, VAT excluded) and the servers of the account a space can be bound to. Empty plans = not orderable for this account yet.' + DATA_NOTE,
+    {}, RO, async () => run(api, 'GET', '/cloud/backup-spaces/plans'));
+  reg('list_backup_spaces', 'List backup spaces', 'Backup spaces (SFTP backup storage bound to one server) of the account.' + DATA_NOTE,
+    { status: z.string().max(20).optional().describe('e.g. active, suspended, cancelled'), page: z.number().int().min(1).optional(), limit: z.number().int().min(1).max(100).optional() }, RO,
+    async ({ status, page, limit }) => run(api, 'GET', '/cloud/backup-spaces', { query: { status, page, limit: limit || 50 } }));
+  reg('get_backup_space', 'Get a backup space', 'A backup space: SFTP host, port, user, writable path (/veri), size, usage, bound server, allowed IPs and state (pending, active, noserver, suspended, cancelled). No password (see get_backup_space_credentials).' + DATA_NOTE,
+    { backup_space_id: BSID }, RO, async ({ backup_space_id }) => run(api, 'GET', `/cloud/backup-spaces/${backup_space_id}`));
+  reg('get_backup_space_credentials', 'Backup space SFTP credentials (secret)', 'SFTP host, port, user, path and the PASSWORD of a backup space. The password is a secret: it is masked unless reveal_secrets=true; reveal it only when the user needs it, never put it into logs, code or chat history you do not need.' + DATA_NOTE,
+    { backup_space_id: BSID, reveal_secrets: z.boolean().optional().describe('Return the password unmasked (only if the user needs it)') }, RO,
+    async ({ backup_space_id, reveal_secrets }) => run(api, 'GET', `/cloud/backup-spaces/${backup_space_id}/credentials`, {}, !!reveal_secrets));
+  reg('create_backup_space', 'Order a backup space (spends money)', 'Order ONE Backup Space (SFTP, hard quota, tr-ist-1) bound to server_id (one of your active servers; optional when the account has one). Only that server\'s IPv4 addresses can connect. Paid from the balance; without confirm=true it only returns a price quote (dry run). Plans and servers: list_backup_space_plans.',
+    { plan: z.string().min(2).max(20).describe('50gb | 100gb | 250gb | 500gb | 1tb'), cycle: z.enum(['monthly', 'quarterly', 'semiannually', 'annually']).optional(),
+      server_id: z.number().int().positive().optional().describe('server to bind the space to'), name: z.string().max(60).optional(), project_id: z.number().int().min(0).optional(),
+      confirm: CONFIRM, idempotency_key: IDEM }, MONEY,
+    money('create_backup_space', '/cloud/backup-spaces', (a) => ({ plan: a.plan, cycle: a.cycle || 'monthly', server_id: a.server_id, name: a.name, project_id: a.project_id })));
+  reg('reset_backup_space_password', 'Reset the backup space password', 'Create a new random SFTP password. The old password stops working at once and open SFTP sessions are closed (backup jobs must be updated). The new password is masked unless reveal_secrets=true.',
+    { backup_space_id: BSID, reveal_secrets: z.boolean().optional(), confirm: CONFIRM }, WRITE,
+    async ({ backup_space_id, reveal_secrets, confirm }) => {
+      if (confirm !== true) return needConfirm(`reset the SFTP password of backup space ${backup_space_id} (the old password stops working at once, open sessions are closed).`);
+      return run(api, 'POST', `/cloud/backup-spaces/${backup_space_id}/password`, { body: { confirm: true } }, !!reveal_secrets);
+    });
+  reg('attach_backup_space_server', 'Bind a backup space to another server', 'Bind the backup space to server_id: from then on only that server\'s IPv4 addresses can connect and the previous server loses access at once. Files are not touched.',
+    { backup_space_id: BSID, server_id: z.number().int().positive().optional().describe('one of your active servers (optional when the account has one)'), confirm: CONFIRM }, WRITE,
+    async ({ backup_space_id, server_id, confirm }) => {
+      if (confirm !== true) return needConfirm(`bind backup space ${backup_space_id} to server ${server_id || '(the only server of the account)'}; the previous server loses access.`);
+      return run(api, 'PUT', `/cloud/backup-spaces/${backup_space_id}/server`, { body: server_id ? { server_id } : {} });
+    });
+  reg('delete_backup_space', 'DELETE a backup space (destructive)', 'Cancel a backup space. immediate=true deletes the space and EVERY file in it permanently within about a minute (no snapshot, cannot be undone); otherwise a cancellation request is filed and the space keeps working until it is processed.',
+    { backup_space_id: BSID, immediate: z.boolean().optional(), confirm: CONFIRM }, DESTRUCTIVE,
+    async ({ backup_space_id, immediate, confirm }) => {
+      if (confirm !== true) return needConfirm(`DELETE backup space ${backup_space_id}${immediate ? ' immediately (every file in it is deleted permanently)' : ' (cancellation request)'}. This cannot be undone.`);
+      return run(api, 'DELETE', `/cloud/backup-spaces/${backup_space_id}`, { query: { confirm: 'true', immediate: immediate ? 'true' : undefined } });
+    });
+
   // ---------------------------------------------------------------- destructive
   reg('delete_server', 'DELETE a cloud server (destructive)', 'Cancel a cloud server. immediate=true wipes it now and stops billing; otherwise a cancellation request is filed. Cannot be undone.',
     { server_id: id('server id'), immediate: z.boolean().optional(), confirm: CONFIRM }, DESTRUCTIVE,

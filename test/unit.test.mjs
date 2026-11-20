@@ -326,3 +326,54 @@ test('Protected Storage tools: versions, lock, legal hold; writes need confirm, 
   await t.get_object_lock_summary.handler({ storage_id: 17000 }, {});
   assert.equal(calls[5][1], 'https://api.example/api/v1/client/cloud/storage/17000/object-lock');
 });
+
+test('backup space tools: registered, money quote first, writes need confirm, password masked (API 2.44.0, R2 2026-11-20)', async () => {
+  const { createGyroServer } = await import('../src/server.js');
+  const calls = [];
+  const fetchImpl = async (u, o) => {
+    calls.push([o.method, String(u), o.body, o.headers]);
+    const data = String(u).includes('/credentials') || String(u).endsWith('/password') ? { user: 'y-m1', password: 'Gyro-Test-Parola' } : { ok: 1 };
+    return new Response(JSON.stringify({ data }), { status: 200 });
+  };
+  const t = createGyroServer({ token: 'wck_test', apiUrl: 'https://api.example/api/v1/client', fetchImpl })._registeredTools;
+  const B = 'https://api.example/api/v1/client/cloud/backup-spaces';
+  for (const n of ['list_backup_space_plans', 'list_backup_spaces', 'get_backup_space', 'get_backup_space_credentials', 'create_backup_space',
+    'reset_backup_space_password', 'attach_backup_space_server', 'delete_backup_space']) assert.ok(t[n], n);
+  for (const n of ['list_backup_space_plans', 'list_backup_spaces', 'get_backup_space']) assert.equal(t[n].annotations.readOnlyHint, true, n);
+  assert.equal(t.delete_backup_space.annotations.destructiveHint, true);
+  // without confirm: nothing is sent for writes / deletes
+  for (const [n, a] of [['reset_backup_space_password', { backup_space_id: 7 }], ['attach_backup_space_server', { backup_space_id: 7, server_id: 9 }],
+    ['delete_backup_space', { backup_space_id: 7, immediate: true }]]) {
+    const r = await t[n].handler(a, {});
+    assert.match(r.content[0].text, /Not done/, n);
+  }
+  assert.equal(calls.length, 0);
+  // create without confirm = dry-run quote only, no Idempotency-Key
+  let r = await t.create_backup_space.handler({ plan: '50gb', server_id: 9, name: 'gyro-proje-yedek' }, {});
+  assert.match(r.content[0].text, /PRICE QUOTE ONLY/);
+  assert.equal(calls[0][0], 'POST'); assert.equal(calls[0][1], B);
+  assert.deepEqual(JSON.parse(calls[0][2]), { plan: '50gb', cycle: 'monthly', server_id: 9, name: 'gyro-proje-yedek', dry_run: true });
+  assert.equal(calls[0][3]['Idempotency-Key'], undefined);
+  await t.create_backup_space.handler({ plan: '50gb', server_id: 9, name: 'gyro-proje-yedek', confirm: true }, {});
+  assert.equal(JSON.parse(calls[1][2]).confirm, true);
+  assert.equal(JSON.parse(calls[1][2]).dry_run, undefined);
+  assert.ok(calls[1][3]['Idempotency-Key'] && calls[1][3]['Idempotency-Key'].length >= 8);
+  // credentials: masked by default, reveal on request
+  r = await t.get_backup_space_credentials.handler({ backup_space_id: 7 }, {});
+  assert.equal(calls[2][1], B + '/7/credentials');
+  assert.doesNotMatch(r.content[0].text, /Gyro-Test-Parola/); assert.match(r.content[0].text, /masked/);
+  r = await t.get_backup_space_credentials.handler({ backup_space_id: 7, reveal_secrets: true }, {});
+  assert.match(r.content[0].text, /Gyro-Test-Parola/);
+  await t.reset_backup_space_password.handler({ backup_space_id: 7, confirm: true }, {});
+  assert.equal(calls[4][0], 'POST'); assert.equal(calls[4][1], B + '/7/password'); assert.deepEqual(JSON.parse(calls[4][2]), { confirm: true });
+  await t.attach_backup_space_server.handler({ backup_space_id: 7, server_id: 9, confirm: true }, {});
+  assert.equal(calls[5][0], 'PUT'); assert.equal(calls[5][1], B + '/7/server'); assert.deepEqual(JSON.parse(calls[5][2]), { server_id: 9 });
+  await t.delete_backup_space.handler({ backup_space_id: 7, immediate: true, confirm: true }, {});
+  assert.equal(calls[6][0], 'DELETE'); assert.equal(calls[6][1], B + '/7?confirm=true&immediate=true');
+  await t.delete_backup_space.handler({ backup_space_id: 7, confirm: true }, {});
+  assert.equal(calls[7][1], B + '/7?confirm=true');
+  await t.list_backup_spaces.handler({}, {});
+  assert.equal(calls[8][1], B + '?limit=50');
+  await t.list_backup_space_plans.handler({}, {});
+  assert.equal(calls[9][1], B + '/plans');
+});

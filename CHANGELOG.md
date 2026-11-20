@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.0 (2026-11-20)
+Gyro Public API 2.44.0.
+- Backup Space (Gyro Yedekleme Alanı: SFTP backup storage with a hard quota, bound to one server of the account, tr-ist-1):
+  `list_backup_space_plans`, `list_backup_spaces`, `get_backup_space`, `get_backup_space_credentials` (read; the SFTP password is masked
+  unless `reveal_secrets: true`); `create_backup_space` (spends money: price quote first, the confirmed order sends an Idempotency-Key);
+  `reset_backup_space_password`, `attach_backup_space_server` (confirm); `delete_backup_space` (destructive; `immediate: true` deletes
+  every file in the space permanently).
+
 ## 0.13.0 (2026-11-20)
 Gyro Public API 2.43.1.
 - Protected Storage (versioning + object lock) tools: `get_object_lock_summary`, `scan_object_locks`, `list_object_versions`,
