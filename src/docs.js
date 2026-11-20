@@ -1,9 +1,11 @@
 // Read-only access to the public Gyro developer docs (no API key needed). Data is cached for an hour.
+import { gyroFetch } from './net.js';
+
 export const DEFAULT_DOCS = 'https://www.gyrohosting.com/developers';
 const TTL = 3600 * 1000;
 
 export class Docs {
-  constructor({ baseUrl = DEFAULT_DOCS, fetchImpl = fetch } = {}) {
+  constructor({ baseUrl = DEFAULT_DOCS, fetchImpl = gyroFetch } = {}) {
     this.base = baseUrl.replace(/\/+$/, '');
     this.origin = new URL(this.base).origin;
     this.fetch = fetchImpl;

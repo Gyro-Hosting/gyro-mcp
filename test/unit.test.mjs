@@ -377,3 +377,82 @@ test('backup space tools: registered, money quote first, writes need confirm, pa
   await t.list_backup_space_plans.handler({}, {});
   assert.equal(calls[9][1], B + '/plans');
 });
+
+// ---------------------------------------------------------------- 0.14.1: outgoing connection resilience (R2 2026-11-20)
+import net from 'node:net';
+import httpMod from 'node:http';
+import { readFileSync } from 'node:fs';
+import { makeFetch, createDispatcher, isConnectError, NET, gyroFetch } from '../src/index.js';
+import { lookupIpv4First } from '../src/net.js';
+import { fetch as undiciFetch } from 'undici';
+
+const listen = (srv) => new Promise((r) => srv.listen(0, '127.0.0.1', () => r(srv.address().port)));
+const counting = (dispatcher) => { const c = { n: 0 }; c.f = makeFetch({ dispatcher, backoffMs: 0, fetchImpl: (u, o) => { c.n++; return undiciFetch(u, o); } }); return c; };
+
+test('net defaults: keep-alive >= 60 s, 4-8 connections, connect timeout 3-4 s, 3 attempts; API and docs use the shared fetch', () => {
+  assert.ok(NET.keepAliveTimeoutMs >= 60000);
+  assert.ok(NET.connections >= 4 && NET.connections <= 8);
+  assert.ok(NET.connectTimeoutMs >= 3000 && NET.connectTimeoutMs <= 4000);
+  assert.equal(NET.connectAttempts, 3);
+  assert.equal(new GyroApi({ token: 'wck_x' }).fetch, gyroFetch);
+});
+
+test('connect refused: retried, at most 3 attempts, clear message', async () => {
+  const srv = net.createServer(); const port = await listen(srv); await new Promise((r) => srv.close(r)); // closed port
+  const d = createDispatcher(); const c = counting(d);
+  await assert.rejects(c.f(`http://127.0.0.1:${port}/x`, { method: 'POST', body: '{}' }), (e) => /after 3 attempts \(ECONNREFUSED\)/.test(e.message) && isConnectError(e));
+  assert.equal(c.n, 3); await d.close();
+});
+
+test('connect timeout (TLS handshake never completes): retried 3 times, each attempt bounded', async () => {
+  let conns = 0; const socks = [];
+  const srv = net.createServer((s) => { conns++; socks.push(s); }); const port = await listen(srv); // accepts TCP, never answers TLS
+  const d = createDispatcher({ connectTimeoutMs: 300 }); const c = counting(d); const t0 = Date.now();
+  try {
+    await assert.rejects(c.f(`https://127.0.0.1:${port}/x`), (e) => /UND_ERR_CONNECT_TIMEOUT/.test(e.message));
+    assert.equal(c.n, 3); assert.equal(conns, 3);
+    assert.ok(Date.now() - t0 < 6000); // undici's connect timer has ~1 s resolution
+  } finally { socks.forEach((s) => s.destroy()); srv.close(); await d.destroy(); }
+});
+
+test('failure after the request was sent is NOT retried (POST runs at most once)', async () => {
+  let reqs = 0;
+  const srv = httpMod.createServer((req) => { reqs++; req.socket.destroy(); }); const port = await listen(srv);
+  const d = createDispatcher(); const c = counting(d);
+  await assert.rejects(c.f(`http://127.0.0.1:${port}/cloud/servers`, { method: 'POST', body: '{"plan":"x"}', headers: { 'Content-Type': 'application/json' } }), (e) => !isConnectError(e));
+  assert.equal(c.n, 1); assert.equal(reqs, 1);
+  srv.close(); await d.close();
+});
+
+test('connection dropped right after accept (before any response) is not retried either', async () => {
+  let conns = 0;
+  const srv = net.createServer((s) => { conns++; s.destroy(); }); const port = await listen(srv);
+  const d = createDispatcher(); const c = counting(d);
+  await assert.rejects(c.f(`http://127.0.0.1:${port}/x`, { method: 'POST', body: '{}' }));
+  assert.equal(c.n, 1); srv.close(); await d.close();
+});
+
+test('keep-alive: sequential requests reuse one connection', async () => {
+  let conns = 0;
+  const srv = httpMod.createServer((req, res) => { res.end('{"ok":1}'); }); srv.on('connection', () => conns++); const port = await listen(srv);
+  const d = createDispatcher(); const f = makeFetch({ dispatcher: d });
+  try {
+    for (let i = 0; i < 10; i++) { const r = await f(`http://127.0.0.1:${port}/x`); assert.equal((await r.json()).ok, 1); await new Promise((x) => setTimeout(x, 20)); }
+    assert.equal(conns, 1);
+  } finally { await d.destroy(); srv.closeAllConnections(); srv.close(); }
+});
+
+test('aborted request is not retried', async () => {
+  const ac = new AbortController(); ac.abort(); let n = 0;
+  const err = Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('t'), { code: 'UND_ERR_CONNECT_TIMEOUT' }) });
+  const f = makeFetch({ dispatcher: null, backoffMs: 0, fetchImpl: async () => { n++; throw err; } });
+  await assert.rejects(f('https://x.example/', { signal: ac.signal })); assert.equal(n, 1);
+});
+
+test('IPv4 first lookup and image flags (no happy-eyeballs)', async () => {
+  const a = await new Promise((r, j) => lookupIpv4First('localhost', {}, (e, addr, fam) => (e ? j(e) : r({ addr, fam }))));
+  assert.equal(a.fam, 4);
+  const df = readFileSync(new URL('../deploy/Dockerfile', import.meta.url), 'utf8');
+  assert.match(df, /NODE_OPTIONS=.*--dns-result-order=ipv4first/);
+  assert.match(df, /NODE_OPTIONS=.*--no-network-family-autoselection/);
+});

@@ -1,7 +1,8 @@
 // Gyro Public API client used by the MCP tools. The API key is never logged or returned.
 import { createHash, randomUUID } from 'node:crypto';
+import { gyroFetch } from './net.js';
 
-export const VERSION = '0.14.0';
+export const VERSION = '0.14.1';
 export const DEFAULT_API = 'https://www.gyrohosting.com/api/v1/client';
 const SECRET_RE = /(pass(word)?|secret|token|private_?key|api_?key|access_?key_?secret|secret_?key|root_password|otp|totp|cookie|authorization)$/i;
 const MAX_OUT = 120000;
@@ -52,7 +53,7 @@ export function keyId(key) {
 }
 
 export class GyroApi {
-  constructor({ token, baseUrl = DEFAULT_API, fetchImpl = fetch, timeoutMs = 60000 } = {}) {
+  constructor({ token, baseUrl = DEFAULT_API, fetchImpl = gyroFetch, timeoutMs = 60000 } = {}) {
     this.token = token || '';
     this.base = baseUrl.replace(/\/+$/, '');
     this.fetch = fetchImpl;

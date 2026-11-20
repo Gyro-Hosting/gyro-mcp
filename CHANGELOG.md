@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.14.1 (2026-11-20)
+Connection resilience for calls to the Gyro API and docs (no tool changes).
+- One keep-alive connection pool per process (undici Agent: 6 connections per origin, idle sockets kept 60 s), so most calls reuse an
+  open TLS connection instead of a new handshake.
+- IPv4 first and no happy-eyeballs (`autoSelectFamily: false`): the 250 ms per-family attempt limit no longer turns a slow handshake into `ETIMEDOUT`.
+  The container image also sets `NODE_OPTIONS=--dns-result-order=ipv4first --no-network-family-autoselection`.
+- A call is retried only when the connection could not be opened (TCP/TLS handshake failed or took longer than 4 s), at most 3 attempts.
+  Nothing is sent before the connection is open, so this never repeats a request; failures after the request was sent are returned as before.
+  The final error now says `could not connect … after 3 attempts (CODE); nothing was sent, it is safe to retry` instead of a bare `fetch failed`.
+- New dependency: `undici` 6.29.1 (the same version Node 22 ships).
+
 ## 0.14.0 (2026-11-20)
 Gyro Public API 2.44.0.
 - Backup Space (Gyro Yedekleme Alanı: SFTP backup storage with a hard quota, bound to one server of the account, tr-ist-1):

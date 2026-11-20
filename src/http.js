@@ -5,6 +5,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { createGyroServer } from './server.js';
 import { Docs } from './docs.js';
 import { keyId, VERSION } from './gyro.js';
+import { setNetLogger } from './net.js';
 
 const MAX_BODY = Number(process.env.GYRO_MCP_MAX_BODY || 256 * 1024);
 
@@ -23,6 +24,7 @@ export function startHttp({ port = 8787, host = '127.0.0.1', path = '/mcp', apiU
   keyPerMin = Number(process.env.GYRO_MCP_KEY_PER_MIN || 120), ipPerMin = Number(process.env.GYRO_MCP_IP_PER_MIN || 300),
   ipHeader = String(process.env.GYRO_MCP_IP_HEADER || 'x-forwarded-for').toLowerCase(), log = console.error } = {}) {
   const perKey = new Bucket(keyPerMin), perIp = new Bucket(ipPerMin);
+  setNetLogger((o) => log(JSON.stringify({ t: new Date().toISOString(), ...o })));
   // One docs cache for the whole process (docs are public; per-request servers would refetch the index every call).
   const docs = new Docs({ baseUrl: docsUrl });
   // Client IP behind a trusted proxy: the RIGHTMOST X-Forwarded-For entry is the one our proxy added (left entries are client-supplied).

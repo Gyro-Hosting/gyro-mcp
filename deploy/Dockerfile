@@ -13,6 +13,8 @@ COPY package.json LICENSE ./
 COPY bin ./bin
 COPY src ./src
 ENV NODE_ENV=production
+# 0.14.1: IPv4 önce, happy-eyeballs kapalı (pod'larda IPv6 yok; 250 ms deneme sınırı yeni bağlantıları ETIMEDOUT yapıyordu). Kod da aynısını yapar (src/net.js).
+ENV NODE_OPTIONS="--dns-result-order=ipv4first --no-network-family-autoselection"
 USER 1000:1000
 EXPOSE 8080
 ENTRYPOINT ["/sbin/tini", "--", "node", "--disable-proto=throw", "bin/gyro-mcp.js"]

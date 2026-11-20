@@ -1,6 +1,6 @@
 {
   "name": "@gyro-hosting/mcp",
-  "version": "0.14.0",
+  "version": "0.14.1",
   "description": "Gyro Hosting MCP server: search the Gyro developer docs and manage your Gyro cloud (servers, private networks (VPC), containers, S3, DNS, billing) from AI assistants with your own API key.",
   "type": "module",
   "bin": { "gyro-mcp": "bin/gyro-mcp.js" },
@@ -14,6 +14,7 @@
   "author": "Gyro Hosting",
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",
+    "undici": "6.29.1",
     "zod": "3.25.76"
   },
   "scripts": { "test": "node --test test/unit.test.mjs" }
