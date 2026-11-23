@@ -44,7 +44,7 @@ spec:
       terminationGracePeriodSeconds: 70
       containers:
       - name: mcp
-        image: registry.ist.gyrohosting.com/gyro/mcp:0.15.0
+        image: registry.ist.gyrohosting.com/gyro/mcp:0.15.1
         imagePullPolicy: IfNotPresent
         envFrom: [{configMapRef: {name: gyro-mcp}}]
         ports: [{name: http, containerPort: 8080}]
