@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.15.0 (2026-11-23)
+
+- Reseller tools for your own services (API 2.45.0): `get_reseller_service`, `suspend_reseller_service`, `unsuspend_reseller_service`, `terminate_reseller_service` (writes need `confirm: true`; terminate is marked destructive). 123 tools.
+
 ## 0.14.1 (2026-11-20)
 Connection resilience for calls to the Gyro API and docs (no tool changes).
 - One keep-alive connection pool per process (undici Agent: 6 connections per origin, idle sockets kept 60 s), so most calls reuse an

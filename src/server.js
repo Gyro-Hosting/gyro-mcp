@@ -456,6 +456,29 @@ export function createGyroServer({ token, apiUrl, docsUrl, docs: sharedDocs, fet
       return run(api, 'DELETE', `/cloud/backup-spaces/${backup_space_id}`, { query: { confirm: 'true', immediate: immediate ? 'true' : undefined } });
     });
 
+  // ---------------------------------------------------------------- reseller: own services (billing-panel modules, API 2.45.0)
+  const RSID = id('service id (a service on your own reseller account)');
+  reg('get_reseller_service', 'Reseller view of a service', 'Reseller accounts only: status, product, cycle, price, due date, who suspended it (reseller_suspended), the assigned end-customer and the open invoices of one of your services.' + DATA_NOTE,
+    { service_id: RSID }, RO, async ({ service_id }) => run(api, 'GET', `/cloud/reseller/services/${service_id}`));
+  reg('suspend_reseller_service', 'Suspend a service (reseller)', 'Reseller accounts only: suspend one of your active services (e.g. your end-customer did not pay you). Data is kept; repeating returns changed=false.',
+    { service_id: RSID, reason: z.string().max(200).optional(), confirm: CONFIRM }, WRITE,
+    async ({ service_id, reason, confirm }) => {
+      if (confirm !== true) return needConfirm(`suspend service ${service_id} (it stops working until unsuspended; data is kept).`);
+      return run(api, 'POST', `/cloud/reseller/services/${service_id}/suspend`, { body: reason ? { reason } : {} });
+    });
+  reg('unsuspend_reseller_service', 'Unsuspend a service (reseller)', 'Reseller accounts only: lift a suspension YOU made. A suspension made by Gyro (unpaid Gyro invoice) cannot be lifted here: 409 suspended_by_provider / overdue_invoice, pay the Gyro invoice first.',
+    { service_id: RSID, confirm: CONFIRM }, WRITE,
+    async ({ service_id, confirm }) => {
+      if (confirm !== true) return needConfirm(`unsuspend service ${service_id}.`);
+      return run(api, 'POST', `/cloud/reseller/services/${service_id}/unsuspend`, { body: {} });
+    });
+  reg('terminate_reseller_service', 'TERMINATE a service (reseller, destructive)', 'Reseller accounts only: terminate one of your services. immediate=true cancels now: billing stops and the resource and its data are deleted (cannot be undone). Without immediate a cancellation request is filed (active services only; a suspended service needs immediate=true).',
+    { service_id: RSID, immediate: z.boolean().optional(), reason: z.string().max(200).optional(), confirm: CONFIRM }, DESTRUCTIVE,
+    async ({ service_id, immediate, reason, confirm }) => {
+      if (confirm !== true) return needConfirm(`TERMINATE service ${service_id}${immediate ? ' immediately (the resource and its data are deleted)' : ' (cancellation request)'}. This cannot be undone.`);
+      return run(api, 'POST', `/cloud/reseller/services/${service_id}/terminate`, { body: { confirm: true, immediate: !!immediate, reason: reason || undefined } });
+    });
+
   // ---------------------------------------------------------------- destructive
   reg('delete_server', 'DELETE a cloud server (destructive)', 'Cancel a cloud server. immediate=true wipes it now and stops billing; otherwise a cancellation request is filed. Cannot be undone.',
     { server_id: id('server id'), immediate: z.boolean().optional(), confirm: CONFIRM }, DESTRUCTIVE,

@@ -378,6 +378,30 @@ test('backup space tools: registered, money quote first, writes need confirm, pa
   assert.equal(calls[9][1], B + '/plans');
 });
 
+test('reseller service tools: registered, writes need confirm, terminate destructive (API 2.45.0, SOE 2026-11-23)', async () => {
+  const { createGyroServer } = await import('../src/server.js');
+  const calls = [];
+  const fetchImpl = async (u, o) => { calls.push([o.method, String(u), o.body]); return new Response(JSON.stringify({ data: { ok: 1 } }), { status: 200 }); };
+  const t = createGyroServer({ token: 'wck_test', apiUrl: 'https://api.example/api/v1/client', fetchImpl })._registeredTools;
+  const B = 'https://api.example/api/v1/client/cloud/reseller/services/7';
+  for (const n of ['get_reseller_service', 'suspend_reseller_service', 'unsuspend_reseller_service', 'terminate_reseller_service']) assert.ok(t[n], n);
+  assert.equal(t.get_reseller_service.annotations.readOnlyHint, true);
+  assert.equal(t.terminate_reseller_service.annotations.destructiveHint, true);
+  for (const n of ['suspend_reseller_service', 'unsuspend_reseller_service', 'terminate_reseller_service']) {
+    const r = await t[n].handler({ service_id: 7, immediate: true }, {});
+    assert.match(r.content[0].text, /Not done/, n);
+  }
+  assert.equal(calls.length, 0);
+  await t.get_reseller_service.handler({ service_id: 7 }, {});
+  assert.deepEqual(calls[0].slice(0, 2), ['GET', B]);
+  await t.suspend_reseller_service.handler({ service_id: 7, reason: 'unpaid', confirm: true }, {});
+  assert.deepEqual([calls[1][0], calls[1][1], JSON.parse(calls[1][2])], ['POST', B + '/suspend', { reason: 'unpaid' }]);
+  await t.unsuspend_reseller_service.handler({ service_id: 7, confirm: true }, {});
+  assert.equal(calls[2][1], B + '/unsuspend');
+  await t.terminate_reseller_service.handler({ service_id: 7, immediate: true, confirm: true }, {});
+  assert.deepEqual([calls[3][1], JSON.parse(calls[3][2])], [B + '/terminate', { confirm: true, immediate: true }]);
+});
+
 // ---------------------------------------------------------------- 0.14.1: outgoing connection resilience (R2 2026-11-20)
 import net from 'node:net';
 import httpMod from 'node:http';
