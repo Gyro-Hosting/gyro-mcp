@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.15.1 (2026-11-23)
+
+- `set_container_log_package`: the unconfirmed call reads the current log package and says in the question what the change does: a shorter retention deletes the older logs **permanently**; a switch from free to a paid package is billed at least 6 hours (leaving earlier charges the remaining hours at once, "minimum completion"); the monthly price. The API answer carries `data_loss`, `deletes_logs_older_than_days`, `minimum_hours`, `minimum_completion_hours` and `warning` (additive fields of the same endpoint, API 2.45.0).
+
 ## 0.15.0 (2026-11-23)
 
 - Reseller tools for your own services (API 2.45.0): `get_reseller_service`, `suspend_reseller_service`, `unsuspend_reseller_service`, `terminate_reseller_service` (writes need `confirm: true`; terminate is marked destructive). 123 tools.

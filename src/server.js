@@ -171,10 +171,26 @@ export function createGyroServer({ token, apiUrl, docsUrl, docs: sharedDocs, fet
       if (confirm !== true) return needConfirm(`replace the log alert rules of environment ${environment_id} with ${rules.length} rule(s) (rules not in the list are deleted).`);
       return run(api, 'PUT', `/cloud/containers/${environment_id}/log-rules`, { body: { rules } });
     });
-  reg('set_container_log_package', 'Change the container log package', 'Change how long logs are kept and the monthly size: days 30|90|365 with gb from get_container_log_usage packages, or free=true (7 days, 5 GB; logs older than 7 days are deleted). Paid packages are billed hourly from the prepaid balance (no overage bill: oldest logs go first when the size is used up). Show the price to the user before confirming.',
+  reg('set_container_log_package', 'Change the container log package', 'Change how long logs are kept and the monthly size: days 30|90|365 with gb from get_container_log_usage packages, or free=true (7 days, 5 GB). Paid packages are billed hourly from the prepaid balance (no overage bill: oldest logs go first when the size is used up); every switch from free to a paid package is billed at least 6 hours (leaving earlier charges the remaining hours at once, "minimum completion"). A SHORTER retention than the current one deletes the older logs PERMANENTLY. The unconfirmed call returns the price, the data loss and the minimum: tell the user before confirming.',
     { environment_id: id('container environment id'), days: z.number().int().optional(), gb: z.number().int().optional(), free: z.boolean().optional(), confirm: CONFIRM }, MONEY,
     async ({ environment_id, days, gb, free, confirm }) => {
-      if (confirm !== true) return needConfirm(free ? `go back to the free log package for environment ${environment_id} (logs older than 7 days are deleted).` : `switch environment ${environment_id} to the ${days}-day / ${gb} GB per month log package (billed hourly).`);
+      if (confirm !== true) {
+        // F07 / B-04 (API 2.45.1): read the current package so the question says what is lost and what is charged, like the panel dialog
+        let warn = '';
+        try {
+          const g = await api.call('GET', `/cloud/containers/${environment_id}/logs/usage`);
+          const u = g.ok && g.json && (g.json.data || g.json);
+          const cur = (u && u.package) || {};
+          const pk = ((u && u.packages) || []).find((p) => (free ? p.free : (p.days === days && p.gb === gb))) || {};
+          const cd = +cur.days || 7, cg = +cur.gb_month || 5, nd = free ? 7 : days, ng = free ? 5 : gb;
+          if (nd < cd) warn += ` WARNING: retention drops from ${cd} to ${nd} days, logs older than ${nd} days are deleted PERMANENTLY and cannot be recovered.`;
+          else if (ng < cg) warn += ` The monthly size drops from ${cg} GB to ${ng} GB; when it is used up the oldest logs are deleted earlier.`;
+          if (free && +cur.minimum_hours_left > 0) warn += ` The paid package is billed at least ${u.minimum_hours || 6} hours: the remaining ${cur.minimum_hours_left} hour(s) are charged now.`;
+          if (!free && cur.free && +(u && u.minimum_hours) > 0) warn += ` A switch from free to a paid package is billed at least ${u.minimum_hours} hours.`;
+          if (!free && pk.price && pk.price.aylik) warn += ` Price: ${pk.price.aylik} per month, billed hourly.`;
+        } catch (e) { /* the API answer carries data_loss / warning too */ }
+        return needConfirm((free ? `go back to the free log package (7 days, 5 GB) for environment ${environment_id}.` : `switch environment ${environment_id} to the ${days}-day / ${gb} GB per month log package (billed hourly).`) + warn);
+      }
       return run(api, 'PUT', `/cloud/containers/${environment_id}/logs/retention`, { body: free ? { free: true, confirm: true } : { days, gb, confirm: true } });
     });
   reg('run_container_job', 'Run a one-off container job', 'Run a command ONCE with the image (pinned digest), variables and secrets of a container service, e.g. a database migration or seed. The command replaces the image ENTRYPOINT and is a list of strings (no shell unless you write ["sh","-c","..."]). Returns the job id; follow it with get_container_job. Free on node plans; on Serverless billed per vCPU-second/GB-second. Parallel jobs are limited per environment (2-3). Migrations change data: run only what the user asked for.',

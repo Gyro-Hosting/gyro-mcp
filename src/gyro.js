@@ -2,7 +2,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { gyroFetch } from './net.js';
 
-export const VERSION = '0.15.0';
+export const VERSION = '0.15.1';
 export const DEFAULT_API = 'https://www.gyrohosting.com/api/v1/client';
 const SECRET_RE = /(pass(word)?|secret|token|private_?key|api_?key|access_?key_?secret|secret_?key|root_password|otp|totp|cookie|authorization)$/i;
 const MAX_OUT = 120000;

@@ -101,10 +101,34 @@ test('container log tools: env-wide query, where joined, writes need confirm (GY
   assert.match(r.content[0].text, /Not done/);
   r = await t.set_container_log_rules.handler({ environment_id: 17000, rules: [] }, {});
   assert.match(r.content[0].text, /Not done/);
-  assert.equal(calls.length, 2);
+  assert.equal(calls.filter((c) => c[0] !== 'GET').length, 0);   // the unconfirmed package call only reads the current package (F07)
   await t.set_container_log_package.handler({ environment_id: 17000, days: 30, gb: 10, confirm: true }, {});
-  assert.equal(calls[2][0], 'PUT');
-  assert.deepEqual(JSON.parse(calls[2][2]), { days: 30, gb: 10, confirm: true });
+  const put = calls[calls.length - 1];
+  assert.equal(put[0], 'PUT');
+  assert.deepEqual(JSON.parse(put[2]), { days: 30, gb: 10, confirm: true });
+});
+
+test('container log package: the question warns about permanent deletion and the 6 hour minimum (B-04 / F07, SOE 2026-11-23)', async () => {
+  const { createGyroServer } = await import('../src/server.js');
+  const calls = [];
+  const usage = { data: { minimum_hours: 6, package: { code: '90-10', days: 90, gb_month: 10, free: false, minimum_hours_left: 4 },
+    packages: [{ code: '7-5', days: 7, gb: 5, free: true }, { code: '30-10', days: 30, gb: 10, free: false, price: { aylik: '69,32 TL (1,25 €)' } }, { code: '365-10', days: 365, gb: 10, free: false, price: { aylik: '221 TL (3,99 €)' } }] } };
+  const fetchImpl = async (u, o) => { calls.push([o.method, String(u)]); return new Response(JSON.stringify(usage), { status: 200 }); };
+  const t = createGyroServer({ token: 'wck_test', apiUrl: 'https://api.example/api/v1/client', fetchImpl })._registeredTools;
+  let r = await t.set_container_log_package.handler({ environment_id: 17000, free: true }, {});
+  assert.match(r.content[0].text, /Not done/);
+  assert.match(r.content[0].text, /from 90 to 7 days.*PERMANENTLY/);
+  assert.match(r.content[0].text, /remaining 4 hour/);
+  r = await t.set_container_log_package.handler({ environment_id: 17000, days: 30, gb: 10 }, {});
+  assert.match(r.content[0].text, /from 90 to 30 days/);
+  assert.doesNotMatch(r.content[0].text, /remaining/);
+  assert.match(r.content[0].text, /69,32 TL/);
+  r = await t.set_container_log_package.handler({ environment_id: 17000, days: 365, gb: 10 }, {});
+  assert.doesNotMatch(r.content[0].text, /PERMANENTLY/);
+  usage.data.package = { code: '7-5', days: 7, gb_month: 5, free: true, minimum_hours_left: 0 };
+  r = await t.set_container_log_package.handler({ environment_id: 17000, days: 30, gb: 10 }, {});
+  assert.match(r.content[0].text, /at least 6 hours/);
+  assert.ok(calls.every((c) => c[0] === 'GET' && c[1].endsWith('/cloud/containers/17000/logs/usage')));
 });
 
 test('container schedule tools: registered, writes need confirm, headers hidden in the question (GYR-12, R2 2026-11-15)', async () => {
