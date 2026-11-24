@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.16.1 (2026-11-24)
+Gyro Public API 2.46.1: Protected Storage lock limit and long billing cycles.
+- `create_storage`: `cycle` also accepts `biennially` (2 years) and `triennially` (3 years) for protected plans (2x / 3x the yearly price);
+  new optional `object_lock_buckets` (protected plans, object lock bucket rights).
+- An object lock may not end after the service end (renewal) date. `set_bucket_default_retention` / `set_object_retention` say so in their
+  description; a refusal (`422 retention_exceeds_service_end`) now comes with a plain-language `hint` (service end date, the maximum days
+  possible now, renew or move to a longer cycle). `get_object_lock_summary` explains `service_end` and `max_retention_days`.
+
 ## 0.16.0 (2026-11-24)
 Gyro Public API 2.46.0: account context.
 - `list_accounts`: your own account and every account whose owner added you as a panel user (Sub-Accounts), with your permissions there.

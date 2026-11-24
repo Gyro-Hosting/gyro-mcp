@@ -565,3 +565,26 @@ test('account context: the same idempotent call in two accounts uses two keys', 
   assert.equal(seen[1]['X-Account-Id'], '35553');
   assert.throws(() => new GyroApi({ token: 'x', account: '1;DROP' }), /Invalid account id/);
 });
+
+test('Protected Storage 2/3-year cycles and lock limit hint (API 2.46.1, R2 2026-11-24)', async () => {
+  const { createGyroServer } = await import('../src/server.js');
+  const calls = [];
+  const fetchImpl = async (u, o) => {
+    calls.push([o.method, String(u), o.body]);
+    if (String(u).includes('/objects/retention')) {
+      return new Response(JSON.stringify({ error: { code: 'retention_exceeds_service_end', message: 'The lock period cannot go beyond the service end date.',
+        details: { field: 'days', service_end: '2026-12-24T21:22:00+03:00', max_days: 29 } } }), { status: 422 });
+    }
+    return new Response('{"data":{"ok":true}}', { status: 200 });
+  };
+  const t = createGyroServer({ token: 'wck_test', apiUrl: 'https://api.example/api/v1/client', fetchImpl })._registeredTools;
+  await t.create_storage.handler({ plan: 'protected-1tb', cycle: 'triennially', object_lock_buckets: 1 }, {});
+  assert.equal(calls[0][0], 'POST');
+  assert.deepEqual(JSON.parse(calls[0][2]), { plan: 'protected-1tb', cycle: 'triennially', object_lock_buckets: 1, dry_run: true });
+  const r = await t.set_object_retention.handler({ storage_id: 17000, bucket: 'yedek-ab12', key: 'a.txt', mode: 'GOVERNANCE', days: 400, confirm: true }, {});
+  assert.equal(r.isError, true);
+  const o = JSON.parse(r.content[0].text);
+  assert.equal(o.error.code, 'retention_exceeds_service_end');
+  assert.match(o.hint, /at most 29 days/);
+  assert.match(o.hint, /triennially/);
+});
