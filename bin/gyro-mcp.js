@@ -14,7 +14,7 @@ if (argv.includes('--help') || argv.includes('-h')) {
   console.log(`gyro-mcp ${VERSION} — Gyro Hosting MCP server
   stdio:  GYRO_TOKEN=wck_… gyro-mcp          (docs tools work without a key)
   http:   gyro-mcp --http [--port 8787] [--host 127.0.0.1] [--trust-proxy]
-env: GYRO_TOKEN (or GYRO_API_KEY), GYRO_API_URL, GYRO_DOCS_URL, GYRO_MCP_ORIGINS (comma separated allowed browser origins),
+env: GYRO_TOKEN (or GYRO_API_KEY), GYRO_ACCOUNT (default account id, API 2.46.0), GYRO_API_URL, GYRO_DOCS_URL, GYRO_MCP_ORIGINS (comma separated allowed browser origins),
      GYRO_MCP_KEY_PER_MIN (120), GYRO_MCP_IP_PER_MIN (300), GYRO_MCP_MAX_BODY (262144),
      GYRO_MCP_IP_HEADER (x-forwarded-for: rightmost entry, used only with --trust-proxy)
 docs: https://www.gyrohosting.com/developers/en/mcp.html`);
@@ -26,6 +26,6 @@ if (argv.includes('--http')) {
   startHttp({ port: Number(opt('--port', process.env.PORT || 8787)), host: opt('--host', '127.0.0.1'), apiUrl, docsUrl, trustProxy: argv.includes('--trust-proxy'),
     allowedOrigins: (process.env.GYRO_MCP_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean) });
 } else {
-  const server = createGyroServer({ token: process.env.GYRO_TOKEN || process.env.GYRO_API_KEY || '', apiUrl, docsUrl });
+  const server = createGyroServer({ token: process.env.GYRO_TOKEN || process.env.GYRO_API_KEY || '', apiUrl, docsUrl, account: process.env.GYRO_ACCOUNT || '' });
   await server.connect(new StdioServerTransport());
 }

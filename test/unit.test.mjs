@@ -504,3 +504,64 @@ test('IPv4 first lookup and image flags (no happy-eyeballs)', async () => {
   assert.match(df, /NODE_OPTIONS=.*--dns-result-order=ipv4first/);
   assert.match(df, /NODE_OPTIONS=.*--no-network-family-autoselection/);
 });
+
+test('account context (API 2.46.0): account_id per call, session default, list/use_account, idempotency key per account', async () => {
+  const { createGyroServer } = await import('../src/server.js');
+  const calls = [];
+  const accounts = { data: [{ id: 35554, name: 'Gyro Proje Ajans', is_self: true, role: 'owner' }, { id: 35553, name: 'Gyro Proje Musteri', is_self: false, role: 'member', permissions: ['view_services'] }] };
+  const fetchImpl = async (u, o) => {
+    calls.push({ method: o.method, url: String(u), acct: o.headers['X-Account-Id'], idem: o.headers['Idempotency-Key'] });
+    return new Response(JSON.stringify(String(u).includes('/accounts') ? accounts : { data: [] }), { status: 200 });
+  };
+  const t = createGyroServer({ token: 'wck_test', apiUrl: 'https://api.example/api/v1/client', fetchImpl })._registeredTools;
+  assert.ok(t.list_accounts && t.use_account);
+  assert.ok(t.list_servers.inputSchema.shape.account_id, 'account tools take account_id');
+  assert.equal(t.search_docs.inputSchema.shape.account_id, undefined, 'docs tools do not');
+  // default: no header
+  await t.list_servers.handler({}, {});
+  assert.equal(calls.at(-1).acct, undefined);
+  // per call
+  await t.list_servers.handler({ account_id: 35553 }, {});
+  assert.equal(calls.at(-1).acct, '35553');
+  await t.list_servers.handler({}, {});
+  assert.equal(calls.at(-1).acct, undefined, 'per call override does not stick');
+  // invalid id: no request
+  const n = calls.length;
+  const bad = await t.list_servers.handler({ account_id: 'abc' }, {});
+  assert.equal(bad.isError, true); assert.equal(calls.length, n);
+  // list_accounts never carries the header, even with a session default
+  await t.use_account.handler({ account_id: 35553 }, {});
+  await t.list_accounts.handler({}, {});
+  assert.equal(calls.at(-1).url, 'https://api.example/api/v1/client/accounts?limit=100');
+  assert.equal(calls.at(-1).acct, undefined);
+  await t.list_servers.handler({}, {});
+  assert.equal(calls.at(-1).acct, '35553', 'session default after use_account');
+  await t.list_servers.handler({ account_id: 'self' }, {});
+  assert.equal(calls.at(-1).acct, undefined, 'self overrides the session default');
+  // unknown account refused
+  const r = await t.use_account.handler({ account_id: 99999 }, {});
+  assert.equal(r.isError, true);
+  await t.use_account.handler({ account_id: 'self' }, {});
+  await t.list_servers.handler({}, {});
+  assert.equal(calls.at(-1).acct, undefined);
+  // env / remote header default
+  const t2 = createGyroServer({ token: 'wck_test', apiUrl: 'https://api.example/api/v1/client', fetchImpl, account: '35553' })._registeredTools;
+  await t2.list_servers.handler({}, {});
+  assert.equal(calls.at(-1).acct, '35553');
+  const t3 = createGyroServer({ token: 'wck_test', apiUrl: 'https://api.example/api/v1/client', fetchImpl, account: 'junk' })._registeredTools;
+  await t3.list_servers.handler({}, {});
+  assert.equal(calls.at(-1).acct, undefined, 'invalid default ignored');
+});
+
+test('account context: the same idempotent call in two accounts uses two keys', async () => {
+  const { GyroApi, accountScope } = await import('../src/index.js');
+  const seen = [];
+  const api = new GyroApi({ token: 'wck_test', baseUrl: 'https://api.example/api/v1/client', fetchImpl: async (u, o) => { seen.push(o.headers); return new Response('{"data":{}}', { status: 201 }); } });
+  await api.call('POST', '/cloud/ssh-keys', { body: {}, idempotencyKey: 'mcp-abc' });
+  await accountScope.run('35553', () => api.call('POST', '/cloud/ssh-keys', { body: {}, idempotencyKey: 'mcp-abc' }));
+  assert.equal(seen[0]['Idempotency-Key'], 'mcp-abc');
+  assert.equal(seen[0]['X-Account-Id'], undefined);
+  assert.equal(seen[1]['Idempotency-Key'], 'mcp-abc-a35553');
+  assert.equal(seen[1]['X-Account-Id'], '35553');
+  assert.throws(() => new GyroApi({ token: 'x', account: '1;DROP' }), /Invalid account id/);
+});

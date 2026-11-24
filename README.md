@@ -56,7 +56,11 @@ addresses `45.87.174.151`, `45.87.174.153`, `45.87.174.154`. Limits: about 120 r
 a new server instance is built per request, so nothing is shared between keys. Per-key and per-IP rate limits; browser `Origin`s are refused
 unless listed in `GYRO_MCP_ORIGINS`. Run it behind TLS (`--trust-proxy` to read the client IP from the proxy).
 
-Environment: `GYRO_TOKEN` (or `GYRO_API_KEY`), `GYRO_API_URL` (default `https://www.gyrohosting.com/api/v1/client`), `GYRO_DOCS_URL` (default `https://www.gyrohosting.com/developers`).
+Working in another account (API 2.46.0): if the owner of an account added you under *Sub-Accounts*, `list_accounts` shows it with your
+permissions; pass `account_id` to any account tool, or `use_account` for the session. Defaults: `GYRO_ACCOUNT=<id>` (stdio) or the
+`X-Account-Id` header in the remote client configuration. Permissions are exactly the panel user permissions.
+
+Environment: `GYRO_TOKEN` (or `GYRO_API_KEY`), `GYRO_ACCOUNT` (default account id), `GYRO_API_URL` (default `https://www.gyrohosting.com/api/v1/client`), `GYRO_DOCS_URL` (default `https://www.gyrohosting.com/developers`).
 
 Docs: https://www.gyrohosting.com/developers/en/mcp.html · Türkçe: https://www.gyrohosting.com/developers/tr/mcp.html
 

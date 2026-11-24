@@ -52,7 +52,7 @@ export function startHttp({ port = 8787, host = '127.0.0.1', path = '/mcp', apiU
       res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id, Retry-After');
     }
     if (req.method === 'OPTIONS') {
-      res.writeHead(204, { 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'Authorization, Content-Type, Accept, Mcp-Protocol-Version, Mcp-Session-Id, Last-Event-ID',
+      res.writeHead(204, { 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'Authorization, Content-Type, Accept, Mcp-Protocol-Version, Mcp-Session-Id, Last-Event-ID, X-Account-Id',
         'Access-Control-Max-Age': '600', 'Cache-Control': 'no-store' });
       return res.end();
     }
@@ -72,7 +72,7 @@ export function startHttp({ port = 8787, host = '127.0.0.1', path = '/mcp', apiU
     try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || 'null'); } catch { return rpcErr(res, 400, 'Invalid JSON'); }
     const msgs = Array.isArray(body) ? body : [body];
     const what = msgs.map((x) => (x && x.method === 'tools/call' && x.params ? 'tools/call:' + String(x.params.name).slice(0, 40) : (x && x.method) || '?')).join(',').slice(0, 200);
-    const server = createGyroServer({ token, apiUrl, docs });
+    const server = createGyroServer({ token, apiUrl, docs, account: String(req.headers['x-account-id'] || '').slice(0, 12) });   // API 2.46.0: per request default account
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on('close', () => { transport.close(); server.close(); });
     try {

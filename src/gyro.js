@@ -1,8 +1,9 @@
 // Gyro Public API client used by the MCP tools. The API key is never logged or returned.
 import { createHash, randomUUID } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { gyroFetch } from './net.js';
 
-export const VERSION = '0.15.1';
+export const VERSION = '0.16.0';
 export const DEFAULT_API = 'https://www.gyrohosting.com/api/v1/client';
 const SECRET_RE = /(pass(word)?|secret|token|private_?key|api_?key|access_?key_?secret|secret_?key|root_password|otp|totp|cookie|authorization)$/i;
 const MAX_OUT = 120000;
@@ -52,9 +53,22 @@ export function keyId(key) {
   return key ? createHash('sha256').update(key).digest('hex').slice(0, 10) : 'anon';
 }
 
+/** API 2.46.0 account context: '' = own account, else a positive integer id (X-Account-Id). */
+export function parseAccountId(v) {
+  if (v === undefined || v === null) return '';
+  const s = String(v).trim().replace(/^#/, '');
+  if (s === '' || s === '0' || s.toLowerCase() === 'self') return '';
+  if (!/^[1-9][0-9]{0,9}$/.test(s)) { const e = new Error(`Invalid account id "${s.slice(0, 20)}": use an id from list_accounts, or "self".`); e.code = 'bad_account'; throw e; }
+  return s;
+}
+
+/** Per tool call account override (account_id argument) without touching the session default. */
+export const accountScope = new AsyncLocalStorage();
+
 export class GyroApi {
-  constructor({ token, baseUrl = DEFAULT_API, fetchImpl = gyroFetch, timeoutMs = 60000 } = {}) {
+  constructor({ token, baseUrl = DEFAULT_API, fetchImpl = gyroFetch, timeoutMs = 60000, account = '' } = {}) {
     this.token = token || '';
+    this.account = parseAccountId(account);   // session default (GYRO_ACCOUNT / X-Account-Id of the remote request / use_account)
     this.base = baseUrl.replace(/\/+$/, '');
     this.fetch = fetchImpl;
     this.timeoutMs = timeoutMs;
@@ -63,7 +77,7 @@ export class GyroApi {
   get hasKey() { return !!this.token; }
 
   /** method, path (/cloud/...), {query, body, idempotencyKey}. Returns {status, ok, json, headers}. */
-  async call(method, path, { query, body, idempotencyKey } = {}) {
+  async call(method, path, { query, body, idempotencyKey, noAccount = false } = {}) {
     if (!this.token) {
       const e = new Error('No Gyro API key. stdio: set GYRO_TOKEN in the MCP server env. Remote: send "Authorization: Bearer wck_…". Create a key: client area → account menu → API Credentials.');
       e.code = 'no_key'; throw e;
@@ -76,6 +90,12 @@ export class GyroApi {
     const h = { Authorization: 'Bearer ' + this.token, Accept: 'application/json', 'User-Agent': `gyro-mcp/${VERSION}` };
     if (body !== undefined) h['Content-Type'] = 'application/json';
     if (idempotencyKey) h['Idempotency-Key'] = idempotencyKey;
+    const scoped = accountScope.getStore();
+    const acct = noAccount ? '' : (scoped !== undefined ? scoped : this.account);
+    if (acct) {
+      h['X-Account-Id'] = acct;
+      if (idempotencyKey) h['Idempotency-Key'] = idempotencyKey + '-a' + acct;   // one key per account
+    }
     const ac = new AbortController(); const t = setTimeout(() => ac.abort(), this.timeoutMs);
     try {
       const r = await this.fetch(u, { method, headers: h, body: body === undefined ? undefined : JSON.stringify(body), signal: ac.signal, redirect: 'error' });

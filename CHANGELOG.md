@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.16.0 (2026-11-24)
+Gyro Public API 2.46.0: account context.
+- `list_accounts`: your own account and every account whose owner added you as a panel user (Sub-Accounts), with your permissions there.
+- Every account tool takes an optional `account_id` (sent as `X-Account-Id` for that call only; `"self"` = own account).
+- `use_account`: session default for every account tool (stdio). Defaults: `GYRO_ACCOUNT` (stdio), the `X-Account-Id` header of the
+  remote request (HTTP, stateless; also allowed in CORS).
+- Idempotency keys get an `-a<account>` suffix in another account, so the same call in two accounts is never answered from the other one's
+  stored response (the API answers `422 idempotency_key_reuse` to a reused key).
+- Permissions are the panel user permissions; refusals come back as `403 account_permission_denied` / `account_owner_only`
+  / `account_not_accessible`; prepaid billing tools (`get_balance` …) are own-account only (`422 account_context_unsupported`).
+- In another account orders, invoice payments and domain registration / transfer are paid from that account's balance only
+  (`422 balance_only`); the API activity log is owner only; without the "view passwords" permission secret fields come back `null`
+  and console / password reset / rescue / rebuild style tools are refused; webmail / groupware sign-in needs "single sign-on".
+- First npm release since 0.14.1: also contains 0.15.0 (reseller service tools) and 0.15.1.
+
 ## 0.15.1 (2026-11-23)
 
 - `set_container_log_package`: the unconfirmed call reads the current log package and says in the question what the change does: a shorter retention deletes the older logs **permanently**; a switch from free to a paid package is billed at least 6 hours (leaving earlier charges the remaining hours at once, "minimum completion"); the monthly price. The API answer carries `data_loss`, `deletes_logs_older_than_days`, `minimum_hours`, `minimum_completion_hours` and `warning` (additive fields of the same endpoint, API 2.45.0).
