@@ -25,6 +25,10 @@ function errHint(err) {
       + `${d.max_days !== undefined ? '; at most ' + d.max_days + ' days are possible now' : ''}. Suggest fewer days, renewing the service, or a longer billing cycle `
       + '(annually, biennially = 2 years, triennially = 3 years). get_object_lock_summary shows service_end and max_retention_days.';
   }
+  if (err && err.code === 'cycle_invalid') {
+    const c = (err.details && Array.isArray(err.details.cycles)) ? err.details.cycles.join(', ') : '';
+    return `This plan does not offer that billing period${c ? '; it offers: ' + c : ''}. Ask the user which one to use (Turkey VDS default: monthly; Gyro Cloud Istanbul plans are hourly and ignore cycle).`;
+  }
   return '';
 }
 
@@ -492,6 +496,19 @@ export function createGyroServer({ token, apiUrl, docsUrl, docs: sharedDocs, fet
   reg('create_storage', 'Order Object Storage (spends money)', 'Order S3 Object Storage or Protected Storage, paid from the balance. Without confirm=true it only returns a quote. Plans: GET /cloud/storage/plans. Protected plans also offer biennially (2 years) and triennially (3 years) at 2x / 3x the yearly price; an object lock may not end after the service end date, so long locks need a long cycle.',
     { plan: z.string().min(2).max(40).describe('e.g. standard-250gb, protected-1tb'), cycle: z.enum(['monthly', 'quarterly', 'semiannually', 'annually', 'biennially', 'triennially']).optional().describe('biennially / triennially: protected plans only'), object_lock_buckets: z.number().int().min(1).max(50).optional().describe('protected plans: object lock (WORM) bucket rights, billed every cycle'), name: z.string().max(60).optional(), confirm: CONFIRM, idempotency_key: IDEM }, MONEY,
     money('create_storage', '/cloud/storage', (a) => ({ plan: a.plan, cycle: a.cycle || 'monthly', object_lock_buckets: a.object_lock_buckets, name: a.name })));
+  // Custom templates (API 2.15.0; Turkey VDS plans 2.47.0): your own server images, new servers from them
+  reg('list_templates', 'List custom templates', 'Custom templates of the account (captured from your own tr-ist-1 servers; image = custom:<id>, min_disk_gb, size_gb, status). 0.05 EUR per GB-month, at most 10.' + DATA_NOTE,
+    {}, RO, async () => run(api, 'GET', '/cloud/templates'));
+  reg('create_server_from_template', 'New server from a template (spends money)', 'Order a server installed from one of your ready templates. Gyro Cloud Istanbul plans (e.g. standart-2-4): hourly prepaid from the balance. ' +
+    'Turkey VDS plans (e.g. gvds-2): the plan\'s normal invoice for cycle (monthly default; semiannually, annually, biennially), the first invoice paid from the balance at order time; ' +
+    'the order is not placed if the balance is not enough. The plan disk must be at least the template min_disk_gb. Without confirm=true it only returns a price quote (dry run: cycle, billing, total, tax).',
+    { template_id: id('template id (list_templates)'), plan: z.string().min(2).max(60).optional().describe('e.g. gvds-2 or standart-2-4 (GET /cloud/products?region=tr-ist-1)'),
+      product_id: z.number().int().positive().optional().describe('alternative to plan'), region: z.string().min(2).max(30).optional().describe('resolves plan; default tr-ist-1'),
+      cycle: z.enum(['monthly', 'semiannually', 'annually', 'biennially']).optional().describe('Turkey VDS plans only: first invoice period (default monthly); ignored for Istanbul plans'),
+      hostname: z.string().min(1).max(253).optional(), ssh_keys: z.array(z.number().int().positive()).max(10).optional(), user_data: z.string().max(32768).optional(),
+      project_id: z.number().int().min(0).optional(), confirm: CONFIRM, idempotency_key: IDEM }, MONEY,
+    (a) => money('create_server_from_template', `/cloud/templates/${a.template_id}/servers`, (x) => ({ plan: x.plan, product_id: x.product_id, region: x.region, cycle: x.cycle,
+      hostname: x.hostname, ssh_keys: x.ssh_keys, user_data: x.user_data, project_id: x.project_id }))(a));
 
   // ---------------------------------------------------------------- Backup Space (API 2.44.0, Gyro Yedekleme Alanı): SFTP space bound to one server of the account
   const BSID = id('backup space (service) id');

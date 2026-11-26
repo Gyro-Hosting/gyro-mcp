@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.17.0 (2026-11-26)
+Gyro Public API 2.47.0: new servers from your own templates, also on Turkey VDS plans.
+- `list_templates`: custom templates of the account (`image` = `custom:<id>`, `min_disk_gb`, `size_gb`, `status`).
+- `create_server_from_template` (spends money, quote first): a server installed from one of your templates. Gyro Cloud Istanbul plans are
+  hourly prepaid; Turkey VDS plans (e.g. `gvds-2`) are billed with the plan's normal invoice for `cycle` (monthly default; semiannually,
+  annually, biennially), the first invoice paid from the balance at order time (no order if the balance is not enough). `region` resolves
+  `plan` (default tr-ist-1). The dry-run quote of a Turkey VDS plan returns `cycle`, `billing: "invoice"`, `total` and `tax`.
+- A refused period (`422 cycle_invalid`) comes with a plain-language `hint` listing the periods the plan offers. 127 tools.
+
 ## 0.16.1 (2026-11-24)
 Gyro Public API 2.46.1: Protected Storage lock limit and long billing cycles.
 - `create_storage`: `cycle` also accepts `biennially` (2 years) and `triennially` (3 years) for protected plans (2x / 3x the yearly price);

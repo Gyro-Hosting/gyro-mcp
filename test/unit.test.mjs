@@ -588,3 +588,30 @@ test('Protected Storage 2/3-year cycles and lock limit hint (API 2.46.1, R2 2026
   assert.match(o.hint, /at most 29 days/);
   assert.match(o.hint, /triennially/);
 });
+
+test('Server from a template: Turkey VDS plan, cycle/region, cycle_invalid hint (API 2.47.0, R2 2026-11-26)', async () => {
+  const { createGyroServer } = await import('../src/server.js');
+  const calls = [];
+  const fetchImpl = async (u, o) => {
+    calls.push([o.method, String(u), o.body, o.headers]);
+    const b = o.body ? JSON.parse(o.body) : {};
+    if (b.cycle === 'biennially' && b.plan === 'gvds-9') {
+      return new Response(JSON.stringify({ error: { code: 'cycle_invalid', message: 'cycle is not offered for this plan.',
+        details: { field: 'cycle', cycles: ['monthly', 'annually'] } } }), { status: 422 });
+    }
+    return new Response(JSON.stringify({ data: { dry_run: true, quote: { product_id: 134, template_id: 9, cycle: b.cycle || 'monthly', billing: 'invoice', total: 386.27, tax: 0 } } }), { status: 202 });
+  };
+  const t = createGyroServer({ token: 'wck_test', apiUrl: 'https://api.example/api/v1/client', fetchImpl })._registeredTools;
+  assert.ok(t.list_templates && t.create_server_from_template);
+  const q = await t.create_server_from_template.handler({ template_id: 9, plan: 'gvds-2', region: 'tr-ist-1', cycle: 'annually', hostname: 'vds.example.com' }, {});
+  assert.equal(calls[0][0], 'POST');
+  assert.match(calls[0][1], /\/cloud\/templates\/9\/servers$/);
+  assert.deepEqual(JSON.parse(calls[0][2]), { plan: 'gvds-2', region: 'tr-ist-1', cycle: 'annually', hostname: 'vds.example.com', dry_run: true });
+  assert.match(q.content.map((c) => c.text).join('\n'), /PRICE QUOTE ONLY/);
+  const r = await t.create_server_from_template.handler({ template_id: 9, plan: 'gvds-9', cycle: 'biennially', confirm: true }, {});
+  assert.equal(r.isError, true);
+  const o = JSON.parse(r.content[0].text);
+  assert.equal(o.error.code, 'cycle_invalid');
+  assert.match(o.hint, /it offers: monthly, annually/);
+  assert.equal(JSON.parse(calls[1][2]).confirm, true);
+});
